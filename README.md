@@ -27,19 +27,27 @@ Lockstep allows two people to watch videos synchronously across the web without 
 
 ### 1. Install Extension
 
-1. Clone or download this repository:
+**Option A: Pre-built ZIP**
+1. Download `lockstep.zip` (from the GitHub Releases page or `docs/lockstep.zip`).
+2. Unzip the downloaded file.
+3. Open Chrome and navigate to `chrome://extensions/`.
+4. Toggle **Developer mode** on (top-right corner).
+5. Click **Load unpacked** and select the unzipped `lockstep` folder.
+
+**Option B: From Source**
+1. Clone this repository:
    ```bash
    git clone https://github.com/JEF1056/lockstep.git
    cd lockstep
    ```
-2. Build vendor assets and icons:
+2. Build vendor assets, icons, and package ZIP:
    ```bash
    npm install
    npm run vendor
    ```
 3. Open Chrome and navigate to `chrome://extensions/`.
 4. Toggle **Developer mode** on (top-right corner).
-5. Click **Load unpacked** and select the `lockstep/extension` directory.
+5. Click **Load unpacked** and select the `lockstep/extension` directory (or the unzipped folder from `npm run pack`).
 
 ### 2. Connect & Watch
 

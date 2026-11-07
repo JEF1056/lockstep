@@ -220,6 +220,10 @@ body {
   background-color: var(--accent);
 }
 
+.badge-dot.dot-muted {
+  background-color: var(--on-surface-variant);
+}
+
 .pulse-anim {
   animation: telemetry-pulse 1600ms infinite ease-in-out;
 }
@@ -506,6 +510,16 @@ body {
   padding-top: 4px;
 }
 
+.onboarding-subtitle {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--on-surface-variant);
+  text-align: center;
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+
 .sub-hint-text {
   font-family: var(--font-body);
   font-size: 11px;
@@ -614,25 +628,6 @@ body {
   color: var(--on-surface);
 }
 
-/* Auto-pair live notice banner */
-.auto-pair-banner {
-  padding: 10px 12px;
-  border-radius: var(--radius-default);
-  background-color: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.auto-pair-text {
-  font-family: var(--font-body);
-  font-size: 11px;
-  color: var(--accent);
-  font-weight: 500;
-  line-height: 1.4;
-}
-
 /* --- Screen 3: Invite Paired Redirect --- */
 .paired-stack {
   display: flex;
@@ -694,28 +689,6 @@ body {
 
 .btn-open-video:active {
   transform: scale(0.98);
-}
-
-/* --- Footer --- */
-.app-footer {
-  width: 100%;
-  text-align: center;
-  padding: 14px 16px;
-  border-top: 1px solid var(--outline);
-  font-family: var(--font-body);
-  font-size: 11px;
-  color: var(--on-surface-variant);
-  background-color: var(--surface-lowest);
-}
-
-.app-footer a {
-  color: var(--on-surface-variant);
-  text-decoration: none;
-  transition: color var(--transition-fast);
-}
-
-.app-footer a:hover {
-  color: var(--on-surface);
 }
 
 /* Helper utilities */

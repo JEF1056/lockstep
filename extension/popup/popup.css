@@ -296,23 +296,6 @@ html, body {
   color: var(--primary);
 }
 
-.substate-row {
-  padding: 0 4px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-family: var(--font-body);
-  font-size: 10px;
-  line-height: 14px;
-  color: var(--on-surface-variant);
-}
-
-.substate-val {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
 /* Active Sync Telemetry Card */
 .card-telemetry {
   padding: 8px 10px;

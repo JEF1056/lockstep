@@ -24,8 +24,6 @@ const btnConnect = document.getElementById('btn-connect');
 const idleStatusDot = document.getElementById('idle-status-dot');
 const idleStatusText = document.getElementById('idle-status-text');
 const idleKeyValue = document.getElementById('idle-key-value');
-const standbySubdot = document.getElementById('standby-subdot');
-const standbySubtext = document.getElementById('standby-subtext');
 const btnPairedPick = document.getElementById('btn-paired-pick');
 const btnCopyInvite = document.getElementById('btn-copy-invite');
 const copyBtnText = document.getElementById('copy-btn-text');
@@ -179,13 +177,9 @@ async function render() {
     if (peerOnline) {
       idleStatusDot.className = 'status-dot dot-emerald';
       idleStatusText.textContent = 'Partner online';
-      standbySubdot.className = 'status-dot dot-emerald';
-      standbySubtext.textContent = 'Synced peer ready';
     } else {
       idleStatusDot.className = 'status-dot dot-muted';
       idleStatusText.textContent = 'Waiting for partner…';
-      standbySubdot.className = 'status-dot dot-muted';
-      standbySubtext.textContent = 'Waiting for partner…';
     }
   }
 

@@ -101,6 +101,9 @@
       }
     });
 
+    const pairKey = hashData.pair || (previewScreen ? 'lk-7x9q-v2m1' : '');
+    const targetUrl = hashData.url || (previewScreen ? 'https://aniwaves.ru/watch/solo-leveling-ep-12' : '');
+
     // Header badge state
     const headerBadge = document.getElementById('header-badge');
     if (headerBadge) {
@@ -110,9 +113,12 @@
       } else if (activeScreen === 'paired') {
         headerBadge.className = 'header-badge badge-paired';
         headerBadge.innerHTML = '<span class="badge-dot dot-accent pulse-anim"></span><span>Paired</span>';
-      } else {
+      } else if (pairKey) {
         headerBadge.className = 'header-badge badge-onboarding';
         headerBadge.innerHTML = '<span class="badge-dot dot-accent pulse-anim"></span><span class="text-primary font-semibold">Invite Active · ~14ms</span>';
+      } else {
+        headerBadge.className = 'header-badge badge-onboarding';
+        headerBadge.innerHTML = '<span class="badge-dot dot-muted"></span><span>v1.0 · P2P</span>';
       }
     }
 
@@ -124,29 +130,38 @@
 
     // Populate Onboarding View
     const onboardingKey = document.getElementById('onboarding-key');
+    const keyDisplayBox = document.getElementById('key-display-box');
     const onboardingTargetSec = document.getElementById('onboarding-target-section');
     const onboardingHost = document.getElementById('onboarding-host');
     const onboardingUrl = document.getElementById('onboarding-url');
+    const onboardingHint = document.getElementById('onboarding-hint');
+    const onboardingSubtitle = document.getElementById('onboarding-subtitle');
 
-    const pairKey = hashData.pair || (previewScreen ? 'lk-7x9q-v2m1' : '');
-    if (onboardingKey) {
-      onboardingKey.textContent = pairKey || 'Ready for pairing';
-    }
+    if (pairKey) {
+      if (keyDisplayBox) keyDisplayBox.classList.remove('hidden');
+      if (onboardingKey) onboardingKey.textContent = pairKey;
+      if (onboardingHint) onboardingHint.classList.remove('hidden');
+      if (onboardingSubtitle) onboardingSubtitle.classList.add('hidden');
 
-    const targetUrl = hashData.url || (previewScreen ? 'https://aniwaves.ru/watch/solo-leveling-ep-12' : '');
-    if (targetUrl) {
-      if (onboardingTargetSec) onboardingTargetSec.classList.remove('hidden');
-      if (onboardingUrl) onboardingUrl.textContent = targetUrl;
-      if (onboardingHost) {
-        try {
-          const parsedUrl = new URL(targetUrl);
-          onboardingHost.textContent = parsedUrl.hostname;
-        } catch (_) {
-          onboardingHost.textContent = targetUrl;
+      if (targetUrl) {
+        if (onboardingTargetSec) onboardingTargetSec.classList.remove('hidden');
+        if (onboardingUrl) onboardingUrl.textContent = targetUrl;
+        if (onboardingHost) {
+          try {
+            const parsedUrl = new URL(targetUrl);
+            onboardingHost.textContent = parsedUrl.hostname;
+          } catch (_) {
+            onboardingHost.textContent = targetUrl;
+          }
         }
+      } else if (onboardingTargetSec) {
+        onboardingTargetSec.classList.add('hidden');
       }
-    } else if (onboardingTargetSec && !previewScreen) {
-      onboardingTargetSec.classList.add('hidden');
+    } else {
+      if (keyDisplayBox) keyDisplayBox.classList.add('hidden');
+      if (onboardingTargetSec) onboardingTargetSec.classList.add('hidden');
+      if (onboardingHint) onboardingHint.classList.add('hidden');
+      if (onboardingSubtitle) onboardingSubtitle.classList.remove('hidden');
     }
 
     // Populate Paired View

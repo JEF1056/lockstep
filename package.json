@@ -4,7 +4,8 @@
   "description": "Zero-config peer-to-peer video synchronization Chrome extension",
   "type": "module",
   "scripts": {
-    "vendor": "node scripts/vendor.mjs && node scripts/gen-icons.mjs",
+    "vendor": "node scripts/vendor.mjs && node scripts/gen-icons.mjs && node scripts/pack-extension.mjs",
+    "pack": "node scripts/pack-extension.mjs",
     "validate": "node scripts/validate-extension.mjs",
     "test": "node --test tests/*.test.mjs"
   },

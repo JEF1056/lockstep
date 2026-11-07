@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lockstep — Peer-to-Peer Video Sync</title>
+  <meta name="description" content="Zero-config, serverless peer-to-peer web video synchronization powered by WebRTC and Nostr.">
+  <style>
+    :root {
+      --bg: #09090b;
+      --surface: #121215;
+      --surface-elevated: #18181b;
+      --border: #27272a;
+      --border-focus: #3f3f46;
+      --text: #fafafa;
+      --text-muted: #a1a1aa;
+      --text-faint: #71717a;
+      --emerald: #10b981;
+      --emerald-glow: rgba(16, 185, 129, 0.15);
+      --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --radius-card: 8px;
+      --radius-btn: 6px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .brand-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+
+    .brand-icon {
+      width: 24px;
+      height: 24px;
+      color: var(--emerald);
+    }
+
+    .brand-name {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+
+    .badge-p2p {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--emerald-glow);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--emerald);
+      letter-spacing: 0.04em;
+    }
+
+    .card {
+      background-color: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-card);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .invite-banner {
+      background-color: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-btn);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .invite-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .invite-val-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .pair-code {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--emerald);
+      word-break: break-all;
+    }
+
+    .target-url {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      word-break: break-all;
+      line-height: 1.4;
+    }
+
+    .steps-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .step-item {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background-color: var(--surface-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+
+    .step-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .step-title {
+      font-weight: 500;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .step-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+
+    .code-pill {
+      font-family: var(--font-mono);
+      background-color: var(--bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 11px;
+      user-select: all;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      height: 38px;
+      padding: 0 16px;
+      border-radius: var(--radius-btn);
+      border: 1px solid transparent;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 0.08s ease, background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background-color: var(--emerald);
+      color: #042f2e;
+      border-color: #059669;
+    }
+
+    .btn-primary:hover {
+      background-color: #34d399;
+    }
+
+    .btn-secondary {
+      background-color: var(--surface-elevated);
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .btn-secondary:hover {
+      background-color: #27272a;
+      border-color: var(--border-focus);
+    }
+
+    .btn-icon {
+      width: 16px;
+      height: 16px;
+      stroke-width: 1.5;
+      fill: none;
+      stroke: currentColor;
+    }
+
+    .tab-notice {
+      background: rgba(16, 185, 129, 0.06);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      border-radius: var(--radius-btn);
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: var(--emerald);
+      box-shadow: 0 0 8px var(--emerald);
+      animation: pulse 2s infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    .notice-text {
+      font-size: 12px;
+      color: var(--emerald);
+      font-weight: 500;
+      line-height: 1.4;
+    }
+
+    .footer {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-faint);
+    }
+
+    .footer a {
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+
+    .footer a:hover {
+      color: var(--text);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="brand-header">
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="M10 8l6 4-6 4V8z"/>
+      </svg>
+      <span class="brand-name">Lockstep</span>
+      <span class="badge-p2p">WEBRTC · NOSTR</span>
+    </header>
+
+    <!-- Main Card -->
+    <main class="card">
+      <!-- Dynamic Pair Invite Details (populated from location.hash) -->
+      <div id="invite-box" class="invite-banner hidden">
+        <span class="invite-label">Incoming Pair Invitation</span>
+        <div class="invite-val-row">
+          <span id="invite-pair-key" class="pair-code"></span>
+        </div>
+        <div id="target-url-container" class="hidden">
+          <span class="invite-label" style="margin-top: 4px;">Target Video</span>
+          <p id="target-video-url" class="target-url"></p>
+        </div>
+      </div>
+
+      <!-- Overview text -->
+      <p id="intro-text" class="step-desc">
+        Sync any web video peer-to-peer. Zero central servers, zero accounts. Install the extension once to start watching in lockstep.
+      </p>
+
+      <!-- 1-Click Download Button -->
+      <a id="btn-download" class="btn btn-primary" href="https://github.com/JEF1056/lockstep/archive/refs/heads/main.zip" download>
+        <svg class="btn-icon" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        <span>Download Lockstep Extension (.zip)</span>
+      </a>
+
+      <!-- 3-Step Setup Instructions -->
+      <div class="steps-list">
+        <div class="step-item">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <span class="step-title">Unzip archive</span>
+            <span class="step-desc">Extract the downloaded <span class="code-pill">lockstep-main.zip</span> to find the <span class="code-pill">extension/</span> folder.</span>
+          </div>
+        </div>
+
+        <div class="step-item">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <span class="step-title">Load unpacked in Chrome</span>
+            <span class="step-desc">
+              Navigate to <span class="code-pill">chrome://extensions</span>, toggle on <strong>Developer mode</strong> in the top-right, and click <strong>Load unpacked</strong>. Select the <span class="code-pill">extension</span> folder.
+            </span>
+          </div>
+        </div>
+
+        <div class="step-item">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <span class="step-title">Keep this tab open</span>
+            <span class="step-desc">Lockstep automatically detects the pair key from this tab on install and connects instantly!</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Keep-alive notice -->
+      <div class="tab-notice">
+        <span class="pulse-dot"></span>
+        <span class="notice-text">Listening for Lockstep extension install… Once loaded, auto-pair connects immediately.</span>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Lockstep is free &amp; open source · <a href="https://github.com/JEF1056/lockstep" target="_blank" rel="noopener">GitHub</a> · Pure P2P WebRTC</p>
+    </footer>
+  </div>
+
+  <script>
+    // Client-side only hash reader
+    (function () {
+      function parseHash() {
+        const hash = window.location.hash.replace(/^#/, '');
+        if (!hash) return {};
+        const params = new URLSearchParams(hash);
+        return {
+          pair: params.get('pair') || '',
+          url: params.get('url') || '',
+          src: params.get('src') || ''
+        };
+      }
+
+      function updateUI() {
+        const { pair, url } = parseHash();
+        const inviteBox = document.getElementById('invite-box');
+        const invitePairKey = document.getElementById('invite-pair-key');
+        const targetUrlContainer = document.getElementById('target-url-container');
+        const targetVideoUrl = document.getElementById('target-video-url');
+
+        if (pair) {
+          inviteBox.classList.remove('hidden');
+          invitePairKey.textContent = pair;
+          if (url) {
+            targetUrlContainer.classList.remove('hidden');
+            targetVideoUrl.textContent = url;
+          } else {
+            targetUrlContainer.classList.add('hidden');
+          }
+        } else {
+          inviteBox.classList.add('hidden');
+        }
+      }
+
+      window.addEventListener('hashchange', updateUI);
+      updateUI();
+    })();
+  </script>
+</body>
+</html>

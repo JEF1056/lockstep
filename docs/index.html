@@ -2,423 +2,199 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Lockstep — Peer-to-Peer Video Sync</title>
   <meta name="description" content="Zero-config, serverless peer-to-peer web video synchronization powered by WebRTC and Nostr.">
-  <style>
-    :root {
-      --bg: #09090b;
-      --surface: #121215;
-      --surface-elevated: #18181b;
-      --border: #27272a;
-      --border-focus: #3f3f46;
-      --text: #fafafa;
-      --text-muted: #a1a1aa;
-      --text-faint: #71717a;
-      --emerald: #10b981;
-      --emerald-glow: rgba(16, 185, 129, 0.15);
-      --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      --radius-card: 8px;
-      --radius-btn: 6px;
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      background-color: var(--bg);
-      color: var(--text);
-      font-family: var(--font-sans);
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 24px 16px;
-    }
-
-    .container {
-      width: 100%;
-      max-width: 480px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-
-    .brand-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 4px;
-    }
-
-    .brand-icon {
-      width: 24px;
-      height: 24px;
-      color: var(--emerald);
-    }
-
-    .brand-name {
-      font-size: 17px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
-      color: var(--text);
-    }
-
-    .badge-p2p {
-      margin-left: auto;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      padding: 2px 7px;
-      border-radius: 4px;
-      background: var(--emerald-glow);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      color: var(--emerald);
-      letter-spacing: 0.04em;
-    }
-
-    .card {
-      background-color: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-card);
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-
-    .invite-banner {
-      background-color: var(--surface-elevated);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-btn);
-      padding: 12px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .invite-label {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .invite-val-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .pair-code {
-      font-family: var(--font-mono);
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--emerald);
-      word-break: break-all;
-    }
-
-    .target-url {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-muted);
-      word-break: break-all;
-      line-height: 1.4;
-    }
-
-    .steps-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .step-item {
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-    }
-
-    .step-num {
-      flex-shrink: 0;
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      background-color: var(--surface-elevated);
-      border: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 600;
-      font-family: var(--font-mono);
-      color: var(--text-muted);
-      margin-top: 1px;
-    }
-
-    .step-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .step-title {
-      font-weight: 500;
-      font-size: 13px;
-      color: var(--text);
-    }
-
-    .step-desc {
-      font-size: 12px;
-      color: var(--text-muted);
-      line-height: 1.45;
-    }
-
-    .code-pill {
-      font-family: var(--font-mono);
-      background-color: var(--bg);
-      padding: 2px 6px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-      color: var(--text);
-      font-size: 11px;
-      user-select: all;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      font-family: var(--font-sans);
-      font-size: 13px;
-      font-weight: 600;
-      height: 38px;
-      padding: 0 16px;
-      border-radius: var(--radius-btn);
-      border: 1px solid transparent;
-      cursor: pointer;
-      text-decoration: none;
-      transition: transform 0.08s ease, background-color 0.15s ease, border-color 0.15s ease;
-    }
-
-    .btn:active {
-      transform: scale(0.98);
-    }
-
-    .btn-primary {
-      background-color: var(--emerald);
-      color: #042f2e;
-      border-color: #059669;
-    }
-
-    .btn-primary:hover {
-      background-color: #34d399;
-    }
-
-    .btn-secondary {
-      background-color: var(--surface-elevated);
-      color: var(--text);
-      border-color: var(--border);
-    }
-
-    .btn-secondary:hover {
-      background-color: #27272a;
-      border-color: var(--border-focus);
-    }
-
-    .btn-icon {
-      width: 16px;
-      height: 16px;
-      stroke-width: 1.5;
-      fill: none;
-      stroke: currentColor;
-    }
-
-    .tab-notice {
-      background: rgba(16, 185, 129, 0.06);
-      border: 1px solid rgba(16, 185, 129, 0.2);
-      border-radius: var(--radius-btn);
-      padding: 10px 12px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .pulse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background-color: var(--emerald);
-      box-shadow: 0 0 8px var(--emerald);
-      animation: pulse 2s infinite;
-      flex-shrink: 0;
-    }
-
-    @keyframes pulse {
-      0% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.85); }
-      100% { opacity: 1; transform: scale(1); }
-    }
-
-    .notice-text {
-      font-size: 12px;
-      color: var(--emerald);
-      font-weight: 500;
-      line-height: 1.4;
-    }
-
-    .footer {
-      text-align: center;
-      font-size: 11px;
-      color: var(--text-faint);
-    }
-
-    .footer a {
-      color: var(--text-muted);
-      text-decoration: none;
-      transition: color 0.15s ease;
-    }
-
-    .footer a:hover {
-      color: var(--text);
-    }
-
-    .hidden {
-      display: none !important;
-    }
-  </style>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
 </head>
 <body>
-  <div class="container">
-    <!-- Header -->
-    <header class="brand-header">
-      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="9"/>
-        <path d="M10 8l6 4-6 4V8z"/>
+  <!-- Desktop Minimal Header -->
+  <header class="app-header">
+    <div class="brand-wrapper">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" class="brand-logo" xmlns="http://www.w3.org/2000/svg" aria-label="Lockstep Interlocking Prismatic Mark">
+        <circle cx="8" cy="12" r="5" stroke="#00E5FF" stroke-width="2.5"></circle>
+        <circle cx="16" cy="12" r="5" stroke="#EC4899" stroke-width="2.5"></circle>
+        <path d="M12 9C13 9.8 13.6 10.8 13.6 12C13.6 13.2 13 14.2 12 15C11 14.2 10.4 13.2 10.4 12C10.4 10.8 11 9.8 12 9Z" fill="#FBBF24"></path>
       </svg>
-      <span class="brand-name">Lockstep</span>
-      <span class="badge-p2p">WEBRTC · NOSTR</span>
-    </header>
+      <span class="brand-title">Lockstep</span>
+    </div>
 
-    <!-- Main Card -->
-    <main class="card">
-      <!-- Dynamic Pair Invite Details (populated from location.hash) -->
-      <div id="invite-box" class="invite-banner hidden">
-        <span class="invite-label">Incoming Pair Invitation</span>
-        <div class="invite-val-row">
-          <span id="invite-pair-key" class="pair-code"></span>
+    <!-- Header Status Badge Container (dynamic) -->
+    <div id="header-badge" class="header-badge badge-onboarding">
+      <!-- Injected by app.js -->
+    </div>
+  </header>
+
+  <!-- Centered Utility Card Viewport -->
+  <main class="main-viewport">
+    <div class="utility-card">
+
+      <!-- Screen 1: Unsupported Browser Gate -->
+      <section id="screen-unsupported" class="screen-view" aria-label="Unsupported Browser Gate">
+        <div class="unsupported-stack">
+          <div class="hero-icon-container icon-warning">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="12" rx="2"></rect>
+              <line x1="2" y1="20" x2="22" y2="20"></line>
+            </svg>
+          </div>
+
+          <div class="headline-group">
+            <h1 class="screen-headline">Open on Desktop Chrome</h1>
+            <p class="screen-subtext">Mobile browsers cannot run extensions. Copy this link to your computer:</p>
+          </div>
+
+          <div class="copy-input-row">
+            <input id="unsupported-url-input" type="text" readonly aria-label="Invite link URL" class="copy-input-field">
+            <button id="btn-copy-unsupported" type="button" class="copy-btn-compact">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span id="btn-copy-unsupported-text">Copy</span>
+            </button>
+          </div>
+
+          <p class="compatibility-line">Compatible with Chrome, Brave, Arc, Edge on desktop</p>
         </div>
-        <div id="target-url-container" class="hidden">
-          <span class="invite-label" style="margin-top: 4px;">Target Video</span>
-          <p id="target-video-url" class="target-url"></p>
-        </div>
-      </div>
+      </section>
 
-      <!-- Overview text -->
-      <p id="intro-text" class="step-desc">
-        Sync any web video peer-to-peer. Zero central servers, zero accounts. Install the extension once to start watching in lockstep.
-      </p>
+      <!-- Screen 2: Magic Invite Onboarding -->
+      <section id="screen-onboarding" class="screen-view" aria-label="Magic Invite Onboarding">
+        <div class="onboarding-stack">
+          <!-- Video Target & Key Section -->
+          <div id="onboarding-target-section">
+            <div class="target-meta-header">
+              <span>TARGET VIDEO</span>
+              <span id="onboarding-host" class="target-host-highlight">aniwaves.ru</span>
+            </div>
 
-      <!-- 1-Click Download Button -->
-      <a id="btn-download" class="btn btn-primary" href="https://github.com/JEF1056/lockstep/archive/refs/heads/main.zip" download>
-        <svg class="btn-icon" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
-        </svg>
-        <span>Download Lockstep Extension (.zip)</span>
-      </a>
+            <div class="target-url-box">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A1A1AA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+                <line x1="7" y1="2" x2="7" y2="22"></line>
+                <line x1="17" y1="2" x2="17" y2="22"></line>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+                <line x1="2" y1="7" x2="7" y2="7"></line>
+                <line x1="2" y1="17" x2="7" y2="17"></line>
+                <line x1="17" y1="17" x2="22" y2="17"></line>
+                <line x1="17" y1="7" x2="22" y2="7"></line>
+              </svg>
+              <span id="onboarding-url" class="target-url-text">https://aniwaves.ru/watch/solo-leveling-ep-12</span>
+            </div>
+          </div>
 
-      <!-- 3-Step Setup Instructions -->
-      <div class="steps-list">
-        <div class="step-item">
-          <div class="step-num">1</div>
-          <div class="step-content">
-            <span class="step-title">Unzip archive</span>
-            <span class="step-desc">Extract the downloaded <span class="code-pill">lockstep-main.zip</span> to find the <span class="code-pill">extension/</span> folder.</span>
+          <!-- Pair Key Box -->
+          <div class="key-display-box">
+            <div class="key-label-wrapper">
+              <span class="key-label">KEY:</span>
+              <span id="onboarding-key" class="key-value">lk-7x9q-v2m1</span>
+            </div>
+            <button id="btn-copy-key" type="button" class="btn-solid-secondary">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#A1A1AA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+              <span id="btn-copy-key-text">Copy</span>
+            </button>
+          </div>
+
+          <!-- Primary Action: Solid Download Button -->
+          <div class="action-wrapper">
+            <a id="btn-download-extension" href="https://github.com/JEF1056/lockstep/archive/refs/heads/main.zip" class="btn-solid-primary" download>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>Download Extension (.zip)</span>
+            </a>
+            <p class="sub-hint-text">Keep this tab open — redirects automatically once installed.</p>
+          </div>
+
+          <!-- Live auto-pair notice banner -->
+          <div class="auto-pair-banner">
+            <span class="badge-dot dot-accent pulse-anim"></span>
+            <span class="auto-pair-text">Listening for Lockstep extension install… Once loaded, auto-pair connects immediately.</span>
+          </div>
+
+          <!-- Detailed 3-Step Setup Instructions -->
+          <div class="instructions-section">
+            <div class="instructions-header">
+              <span class="instructions-title">INSTALLATION INSTRUCTIONS</span>
+              <span class="instructions-time">~30 seconds</span>
+            </div>
+
+            <div class="steps-list">
+              <!-- Step 1 -->
+              <div class="step-card">
+                <span class="step-badge badge-1">1</span>
+                <div class="step-details">
+                  <p class="step-heading">Extract the ZIP archive</p>
+                  <p class="step-explanation">Double-click the downloaded <code class="inline-code">lockstep.zip</code> file to extract the extension folder to your computer.</p>
+                </div>
+              </div>
+
+              <!-- Step 2 -->
+              <div class="step-card">
+                <span class="step-badge badge-2">2</span>
+                <div class="step-details">
+                  <p class="step-heading">Open Extensions &amp; enable Developer mode</p>
+                  <p class="step-explanation">In a new tab, navigate to <code class="inline-code">chrome://extensions</code> and toggle the <strong>Developer mode</strong> switch in the top-right corner.</p>
+                </div>
+              </div>
+
+              <!-- Step 3 -->
+              <div class="step-card">
+                <span class="step-badge badge-3">3</span>
+                <div class="step-details">
+                  <p class="step-heading">Click &ldquo;Load unpacked&rdquo;</p>
+                  <p class="step-explanation">Click the <strong>Load unpacked</strong> button on the top-left toolbar and select the unzipped <code class="inline-code">extension/</code> directory.</p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
+      </section>
 
-        <div class="step-item">
-          <div class="step-num">2</div>
-          <div class="step-content">
-            <span class="step-title">Load unpacked in Chrome</span>
-            <span class="step-desc">
-              Navigate to <span class="code-pill">chrome://extensions</span>, toggle on <strong>Developer mode</strong> in the top-right, and click <strong>Load unpacked</strong>. Select the <span class="code-pill">extension</span> folder.
-            </span>
+      <!-- Screen 3: Invite Paired Redirect -->
+      <section id="screen-paired" class="screen-view" aria-label="Invite Paired Redirect">
+        <div class="paired-stack">
+          <div class="hero-icon-container icon-accent">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
           </div>
-        </div>
 
-        <div class="step-item">
-          <div class="step-num">3</div>
-          <div class="step-content">
-            <span class="step-title">Keep this tab open</span>
-            <span class="step-desc">Lockstep automatically detects the pair key from this tab on install and connects instantly!</span>
+          <div class="headline-group">
+            <h1 class="screen-headline">Browsers Paired</h1>
+            <p id="paired-subtext" class="screen-subtext">Opening synced video tab…</p>
           </div>
+
+          <!-- Destination Target Line -->
+          <div id="paired-dest-row" class="destination-line">
+            <span id="paired-dest-url" class="destination-url">aniwaves.ru/watch/solo-leveling-ep-12</span>
+            <span id="paired-countdown" class="destination-countdown">1s</span>
+          </div>
+
+          <!-- Manual Action Button -->
+          <a id="btn-open-video" href="#" class="btn-open-video">
+            <span>Open Video Tab</span>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </a>
         </div>
-      </div>
+      </section>
 
-      <!-- Keep-alive notice -->
-      <div class="tab-notice">
-        <span class="pulse-dot"></span>
-        <span class="notice-text">Listening for Lockstep extension install… Once loaded, auto-pair connects immediately.</span>
-      </div>
-    </main>
+    </div>
+  </main>
 
-    <!-- Footer -->
-    <footer class="footer">
-      <p>Lockstep is free &amp; open source · <a href="https://github.com/JEF1056/lockstep" target="_blank" rel="noopener">GitHub</a> · Pure P2P WebRTC</p>
-    </footer>
-  </div>
-
-  <script>
-    // Client-side only hash reader
-    (function () {
-      function parseHash() {
-        const hash = window.location.hash.replace(/^#/, '');
-        if (!hash) return {};
-        const params = new URLSearchParams(hash);
-        return {
-          pair: params.get('pair') || '',
-          url: params.get('url') || '',
-          src: params.get('src') || ''
-        };
-      }
-
-      function updateUI() {
-        const { pair, url } = parseHash();
-        const inviteBox = document.getElementById('invite-box');
-        const invitePairKey = document.getElementById('invite-pair-key');
-        const targetUrlContainer = document.getElementById('target-url-container');
-        const targetVideoUrl = document.getElementById('target-video-url');
-
-        if (pair) {
-          inviteBox.classList.remove('hidden');
-          invitePairKey.textContent = pair;
-          if (url) {
-            targetUrlContainer.classList.remove('hidden');
-            targetVideoUrl.textContent = url;
-          } else {
-            targetUrlContainer.classList.add('hidden');
-          }
-        } else {
-          inviteBox.classList.add('hidden');
-        }
-      }
-
-      window.addEventListener('hashchange', updateUI);
-      updateUI();
-    })();
-  </script>
+  <!-- Desktop Minimal Footer -->
+  <footer class="app-footer">
+    <p>Lockstep is free &amp; open source · <a href="https://github.com/JEF1056/lockstep" target="_blank" rel="noopener noreferrer">GitHub</a> · Pure P2P WebRTC</p>
+  </footer>
 </body>
 </html>

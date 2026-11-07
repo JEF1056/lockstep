@@ -136,7 +136,7 @@ async function setSessionState(data) {
  * Auto-harvest #pair invite tabs.
  */
 async function harvestInviteUrl(tabId, url) {
-  if (!url) return false;
+  if (!url || url.includes('#paired=1')) return false;
   const parsed = parseInviteUrl(url);
   if (!parsed || !parsed.pairKey) return false;
 
@@ -145,8 +145,40 @@ async function harvestInviteUrl(tabId, url) {
   await joinOffscreenRoom(pairKey);
 
   if (parsed.pageUrl) {
+    // Signal paired state briefly on invite landing tab before setting activeSession / video navigation
+    const baseUrl = url.split('#')[0];
+    if (baseUrl) {
+      const pairedUrl = `${baseUrl}#paired=1&pair=${encodeURIComponent(pairKey)}&url=${encodeURIComponent(parsed.pageUrl)}${parsed.sourceHint ? `&src=${encodeURIComponent(parsed.sourceHint)}` : ''}`;
+      await chrome.tabs.update(tabId, { url: pairedUrl }).catch(() => {});
+    }
+
+    // Brief 900ms display of paired redirect screen
+    await new Promise((resolve) => setTimeout(resolve, 900));
+
+    // Check if an existing open tab already matches the video URL
+    const allTabs = await chrome.tabs.query({}).catch(() => []);
+    const candidateTabs = allTabs.filter((t) => t.id !== tabId);
+    const existingTab = findMatchingTab(candidateTabs, parsed.pageUrl);
+
+    let targetTabId;
+    if (existingTab) {
+      targetTabId = existingTab.id;
+      if (existingTab.windowId) {
+        await chrome.windows.update(existingTab.windowId, { focused: true }).catch(() => {});
+      }
+      await chrome.tabs.update(existingTab.id, { active: true }).catch(() => {});
+      await chrome.tabs.remove(tabId).catch(() => {});
+    } else {
+      targetTabId = tabId;
+      await chrome.tabs.update(tabId, { url: parsed.pageUrl, active: true }).catch(() => {});
+      const tabObj = await chrome.tabs.get(tabId).catch(() => null);
+      if (tabObj?.windowId) {
+        await chrome.windows.update(tabObj.windowId, { focused: true }).catch(() => {});
+      }
+    }
+
     const activeSession = {
-      tabId,
+      tabId: targetTabId,
       frameId: null,
       isHost: false,
       area: 0,
@@ -162,33 +194,42 @@ async function harvestInviteUrl(tabId, url) {
     });
     await updateBadge(activeSession, false);
 
-    await chrome.tabs.update(tabId, { url: parsed.pageUrl, active: true }).catch(() => {});
-    const tabObj = await chrome.tabs.get(tabId).catch(() => null);
-    if (tabObj?.windowId) {
-      await chrome.windows.update(tabObj.windowId, { focused: true }).catch(() => {});
-    }
-
     const listener = (uTabId, uInfo) => {
-      if (uTabId === tabId && uInfo.status === 'complete') {
+      if (uTabId === targetTabId && uInfo.status === 'complete') {
         chrome.tabs.onUpdated.removeListener(listener);
         if (parsed.sourceHint) {
           chrome.tabs.sendMessage(
-            tabId,
+            targetTabId,
             { target: 'content', type: 'APPLY_SOURCE_HINT', sourceHint: parsed.sourceHint },
             { frameId: 0 }
           ).catch(() => {});
         }
         chrome.tabs.sendMessage(
-          tabId,
+          targetTabId,
           { target: 'content', type: 'SCAN_VIDEOS' }
         ).catch(() => {});
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
+
+    if (existingTab) {
+      if (parsed.sourceHint) {
+        chrome.tabs.sendMessage(
+          targetTabId,
+          { target: 'content', type: 'APPLY_SOURCE_HINT', sourceHint: parsed.sourceHint },
+          { frameId: 0 }
+        ).catch(() => {});
+      }
+      chrome.tabs.sendMessage(
+        targetTabId,
+        { target: 'content', type: 'SCAN_VIDEOS' }
+      ).catch(() => {});
+    }
   } else {
-    const cleanUrl = url.split('#')[0];
-    if (cleanUrl) {
-      await chrome.tabs.update(tabId, { url: cleanUrl }).catch(() => {});
+    // If an invite tab has #pair without #url, update hash to #paired=1
+    const baseUrl = url.split('#')[0];
+    if (baseUrl) {
+      await chrome.tabs.update(tabId, { url: `${baseUrl}#paired=1&pair=${encodeURIComponent(pairKey)}` }).catch(() => {});
     }
   }
   return true;
@@ -201,7 +242,7 @@ async function harvestAllTabs() {
   try {
     const tabs = await chrome.tabs.query({});
     for (const tab of tabs) {
-      if (tab.url && tab.url.includes('#pair')) {
+      if (tab.url && tab.url.includes('#pair') && !tab.url.includes('#paired=1')) {
         const harvested = await harvestInviteUrl(tab.id, tab.url);
         if (harvested) break;
       }
@@ -261,7 +302,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url?.includes('#pair') || (changeInfo.status === 'complete' && tab?.url?.includes('#pair'))) {
     const currentUrl = changeInfo.url || tab?.url;
-    if (currentUrl) {
+    if (currentUrl && !currentUrl.includes('#paired=1')) {
       await harvestInviteUrl(tabId, currentUrl);
     }
   }

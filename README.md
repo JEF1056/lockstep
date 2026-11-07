@@ -15,7 +15,10 @@ Lockstep allows two people to watch videos synchronously across the web without 
   - 300ms intent-scoped echo guard to distinguish human actions from network feedback loops.
   - Dynamic RTT dead-reckoning: `<40ms` drift is ignored, `40–400ms` drift is smoothly recovered via `±4%` playback rate adjustments, and `>400ms` drift snaps cleanly with seek.
 - **Zero DOM Pollution**: Never inserts synthetic elements into host pages (`appendChild`, `innerHTML`, `attachShadow`). Highlight overlays use temporary inline CSS styles (`outline` & `cursor`), leaving site scripts and DRM untouched.
-- **Instant Auto-Pairing**: Share a 1-click invite link (`https://jef1056.github.io/lockstep/#pair=<pairKey>`). When the invite tab opens or the extension loads, Lockstep automatically harvests the pair key and syncs.
+- **Instant Auto-Pairing & Stitch Magic Invite**: Share a 1-click invite link (`https://jef1056.github.io/lockstep/#pair=<pairKey>&url=<videoUrl>`). The zero-CDN GitHub Pages app dynamically routes across three Stitch view states:
+  - **Magic Invite Onboarding**: 1-click extension download (.zip), 3-step setup guide, dynamic pair key, and live auto-pair listener.
+  - **Invite Paired Redirect**: Emerald pulse badge and countdown redirect into the synchronized video.
+  - **Unsupported Browser Gate**: Clear prompt on mobile/tablet or non-Chromium browsers to open on desktop Chrome.
 - **Bilateral Session Management**: Ending a session or resyncing synchronizes immediately across both peers.
 
 ---
@@ -70,7 +73,7 @@ Lockstep is built on Chrome Manifest V3 with a strict separation of concerns:
 - **Background Service Worker (`extension/background/`)**: Coordinates tab routing, status state machines, and message distribution.
 - **Offscreen Document (`extension/offscreen/`)**: Hosts WebRTC peer connections and WebSocket Nostr signaling outside the ephemeral service worker lifecycle.
 - **Content Scripts (`extension/content/`)**: Observes video play/pause/seek events and applies sync adjustments without DOM alterations.
-- **Docs & Landing (`docs/index.html`)**: Client-side GitHub Pages landing page reading `#pair` and `#url` hash fragments to onboard new users.
+- **Docs & Landing (`docs/`)**: Zero-CDN responsive Prismatic Studio web app uniting all 3 Stitch screens: Unsupported Browser Gate (mobile/tablet/Safari/Firefox), Magic Invite Onboarding (desktop Chromium awaiting install), and Invite Paired Redirect (synced countdown). Supports `?screen=onboarding|paired|unsupported` preview query parameter.
 
 ---
 

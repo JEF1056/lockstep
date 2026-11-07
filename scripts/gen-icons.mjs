@@ -57,93 +57,121 @@ function createPng(width, height, rgbaBuffer) {
   ]);
 }
 
-// Render emerald-on-zinc icon
+// Precompute LUT for the center lens shape
+// SVG: M12 9C13 9.8 13.6 10.8 13.6 12C13.6 13.2 13 14.2 12 15C11 14.2 10.4 13.2 10.4 12C10.4 10.8 11 9.8 12 9Z
+const LENS_LUT_STEPS = 1000;
+const lensLut = new Float64Array(LENS_LUT_STEPS + 1);
+for (let i = 0; i <= LENS_LUT_STEPS; i++) {
+  const y = 9 + (i / LENS_LUT_STEPS) * 3; // y from 9 to 12
+  let t0 = 0, t1 = 1;
+  for (let iter = 0; iter < 16; iter++) {
+    const tm = (t0 + t1) / 2;
+    const u = 1 - tm;
+    const yt = u * u * u * 9 + 3 * u * u * tm * 9.8 + 3 * u * tm * tm * 10.8 + tm * tm * tm * 12;
+    if (yt < y) t0 = tm; else t1 = tm;
+  }
+  const t = (t0 + t1) / 2;
+  const u = 1 - t;
+  const xt = u * u * u * 12 + 3 * u * u * t * 13 + 3 * u * t * t * 13.6 + t * t * t * 13.6;
+  lensLut[i] = xt - 12; // half-width from center x=12
+}
+
+function isInsideLens(px, py) {
+  const dy = Math.abs(py - 12);
+  if (dy > 3.0) return false;
+  const idx = Math.min(LENS_LUT_STEPS, Math.max(0, Math.round((1 - dy / 3) * LENS_LUT_STEPS)));
+  return Math.abs(px - 12) <= lensLut[idx];
+}
+
+// Distance to rounded rectangle
+function sdRoundedBox(px, py, bx, by, r) {
+  const qx = Math.abs(px) - bx + r;
+  const qy = Math.abs(py) - by + r;
+  return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r;
+}
+
+// Render Stitch Interlocking Prismatic Logo Mark
 // Colors:
-// Background: #09090b (9, 9, 11)
-// Surface:    #121215 (18, 18, 21)
-// Border:     #27272a (39, 39, 42)
-// Emerald:    #10b981 (16, 185, 129)
+// Background: #101014 (16, 16, 20)
+// Outline:    #27272E (39, 39, 46)
+// Left ring:  #00E5FF (0, 229, 255)
+// Right ring: #EC4899 (236, 72, 153)
+// Lens:       #FBBF24 (251, 191, 36)
 function renderIcon(size) {
   const buf = Buffer.alloc(size * size * 4);
-  const SAMPLES = 4; // 4x4 supersampling for crisp edges
-
-  // Distance to rounded rectangle
-  function sdRoundedBox(px, py, bx, by, r) {
-    const qx = Math.abs(px) - bx + r;
-    const qy = Math.abs(py) - by + r;
-    return Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r;
-  }
-
-  // Point in triangle test
-  function pointInTriangle(px, py, x1, y1, x2, y2, x3, y3) {
-    const d1 = (px - x2) * (y1 - y2) - (x1 - x2) * (py - y2);
-    const d2 = (px - x3) * (y2 - y3) - (x2 - x3) * (py - y3);
-    const d3 = (px - x1) * (y3 - y1) - (x3 - x1) * (py - y1);
-    const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-    const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-    return !(hasNeg && hasPos);
-  }
+  const SAMPLES = size <= 48 ? 8 : 4;
+  const totalSamples = SAMPLES * SAMPLES;
+  const borderWidth = Math.max(1.0 / size, 0.02);
+  const scale = 28;
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      let rSum = 0, gSum = 0, bSum = 0, aSum = 0;
+      let rSum = 0, gSum = 0, bSum = 0, samplesInside = 0;
 
       for (let sy = 0; sy < SAMPLES; sy++) {
         for (let sx = 0; sx < SAMPLES; sx++) {
           const u = (x + (sx + 0.5) / SAMPLES) / size;
           const v = (y + (sy + 0.5) / SAMPLES) / size;
 
-          // Centered coords [-0.5, 0.5]
           const cx = u - 0.5;
           const cy = v - 0.5;
 
-          // Rounded container
           const dBox = sdRoundedBox(cx, cy, 0.44, 0.44, 0.12);
-
-          if (dBox > 0.01) {
-            // Outside
-            continue;
+          if (dBox > 0) {
+            continue; // Outside rounded icon background
           }
 
-          let r = 18, g = 18, b = 21, a = 255; // #121215 surface
-          if (dBox > -0.02) {
-            r = 39; g = 39; b = 42; // #27272a border
+          samplesInside++;
+
+          let r = 16, g = 16, b = 20; // #101014 surface
+          if (dBox > -borderWidth) {
+            r = 39; g = 39; b = 46; // #27272E outline
           }
 
-          // Two synchronized playback chevrons (Lockstep dual-play)
-          // Triangle 1: left chevron
-          const inT1 = pointInTriangle(
-            cx, cy,
-            -0.28, -0.22, // top-left
-            -0.28,  0.22, // bot-left
-             0.02,  0.0   // right apex
-          );
+          // Map icon space [-0.5, 0.5] to SVG 24x24 space centered at (12, 12)
+          const px = 12 + cx * scale;
+          const py = 12 + cy * scale;
 
-          // Triangle 2: right chevron
-          const inT2 = pointInTriangle(
-            cx, cy,
-            -0.02, -0.22, // top-left
-            -0.02,  0.22, // bot-left
-             0.28,  0.0   // right apex
-          );
+          // Left ring: cx=8, cy=12, r=5, stroke-width=2.5
+          const d1 = Math.hypot(px - 8, py - 12);
+          const inLeftRing = Math.abs(d1 - 5) <= 1.25;
 
-          if (inT1 || inT2) {
-            r = 16; g = 185; b = 129; // #10b981 Signal Emerald
+          // Right ring: cx=16, cy=12, r=5, stroke-width=2.5
+          const d2 = Math.hypot(px - 16, py - 12);
+          const inRightRing = Math.abs(d2 - 5) <= 1.25;
+
+          // Stitch Interlocking Prismatic SVG painting order:
+          // 1. Left circle (cyan #00E5FF)
+          if (inLeftRing) {
+            r = 0; g = 229; b = 255;
+          }
+          // 2. Right circle (magenta #EC4899)
+          if (inRightRing) {
+            r = 236; g = 72; b = 153;
+          }
+          // 3. Center lens (amber #FBBF24)
+          if (isInsideLens(px, py)) {
+            r = 251; g = 191; b = 36;
           }
 
           rSum += r;
           gSum += g;
           bSum += b;
-          aSum += a;
         }
       }
 
-      const totalSamples = SAMPLES * SAMPLES;
       const idx = (y * size + x) * 4;
-      buf[idx] = Math.round(rSum / totalSamples);
-      buf[idx + 1] = Math.round(gSum / totalSamples);
-      buf[idx + 2] = Math.round(bSum / totalSamples);
-      buf[idx + 3] = Math.round(aSum / totalSamples);
+      if (samplesInside > 0) {
+        buf[idx] = Math.round(rSum / samplesInside);
+        buf[idx + 1] = Math.round(gSum / samplesInside);
+        buf[idx + 2] = Math.round(bSum / samplesInside);
+        buf[idx + 3] = Math.round((samplesInside / totalSamples) * 255);
+      } else {
+        buf[idx] = 0;
+        buf[idx + 1] = 0;
+        buf[idx + 2] = 0;
+        buf[idx + 3] = 0;
+      }
     }
   }
 

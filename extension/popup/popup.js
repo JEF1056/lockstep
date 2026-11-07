@@ -1,34 +1,47 @@
-// popup.js - Lockstep UI Controller
+// popup.js - Lockstep Prismatic Studio UI Controller
 
 const INVITE_BASE_URL = 'https://jef1056.github.io/lockstep/';
 
 // DOM Elements
+const chipIdle = document.getElementById('chip-idle');
+const chipStandby = document.getElementById('chip-standby');
+const chipSyncing = document.getElementById('chip-syncing');
+const standbyHeaderDot = document.getElementById('standby-header-dot');
+const standbyHeaderText = document.getElementById('standby-header-text');
+
 const viewUnpaired = document.getElementById('view-unpaired');
 const viewPairedIdle = document.getElementById('view-paired-idle');
 const viewSyncing = document.getElementById('view-syncing');
 
+// 1A Elements
 const btnUnpairedPick = document.getElementById('btn-unpaired-pick');
-const formConnect = document.getElementById('form-connect');
-const inputPairKey = document.getElementById('pair-key');
 const detailsPairKey = document.getElementById('details-pair-key');
+const formConnect = document.getElementById('form-connect');
+const inputPairKey = document.getElementById('input-pair-key');
+const btnConnect = document.getElementById('btn-connect');
 
+// 1B Elements
 const idleStatusDot = document.getElementById('idle-status-dot');
 const idleStatusText = document.getElementById('idle-status-text');
 const idleKeyValue = document.getElementById('idle-key-value');
+const standbySubdot = document.getElementById('standby-subdot');
+const standbySubtext = document.getElementById('standby-subtext');
 const btnPairedPick = document.getElementById('btn-paired-pick');
 const btnCopyInvite = document.getElementById('btn-copy-invite');
 const copyBtnText = document.getElementById('copy-btn-text');
-const iconCopy = document.getElementById('icon-copy');
-const iconCopied = document.getElementById('icon-copied');
+const badgeCopied = document.getElementById('badge-copied');
 const btnUnpairIdle = document.getElementById('btn-unpair-idle');
 
+// 1C Elements
 const syncDomain = document.getElementById('sync-domain');
+const syncPing = document.getElementById('sync-ping');
 const syncStatusDot = document.getElementById('sync-status-dot');
 const syncStatusText = document.getElementById('sync-status-text');
+const syncMutedWarning = document.getElementById('sync-muted-warning');
 const btnEndSession = document.getElementById('btn-end-session');
 const btnResync = document.getElementById('btn-resync');
+const resyncBtnText = document.getElementById('resync-btn-text');
 const btnUnpairSync = document.getElementById('btn-unpair-sync');
-const headerStatusIndicator = document.getElementById('header-status-indicator');
 
 let currentStatus = null;
 let copyTimeout = null;
@@ -50,12 +63,12 @@ function sendSw(message) {
   });
 }
 
-// Copy text with fallback
+// Copy text to clipboard with fallback
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
     return true;
-  } catch (err) {
+  } catch {
     const ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed';
@@ -68,16 +81,14 @@ async function copyText(text) {
   }
 }
 
-// Show visual copied feedback on copy invite button
+// Show visual feedback on copy invite button
 function showCopiedFeedback() {
   if (copyTimeout) clearTimeout(copyTimeout);
-  iconCopy.classList.add('hidden');
-  iconCopied.classList.remove('hidden');
-  copyBtnText.textContent = 'Copied!';
+  if (badgeCopied) badgeCopied.classList.remove('hidden');
+  if (copyBtnText) copyBtnText.textContent = 'Copied!';
   copyTimeout = setTimeout(() => {
-    iconCopy.classList.remove('hidden');
-    iconCopied.classList.add('hidden');
-    copyBtnText.textContent = 'Copy Invite Link';
+    if (badgeCopied) badgeCopied.classList.add('hidden');
+    if (copyBtnText) copyBtnText.textContent = 'Copy';
     copyTimeout = null;
   }, 1500);
 }
@@ -93,7 +104,7 @@ function extractDomain(activeSession) {
       return activeSession.pageUrl;
     }
   }
-  return 'Active tab';
+  return 'Active video';
 }
 
 // Query service worker status, fallback to storage
@@ -112,16 +123,16 @@ async function fetchStatus() {
     return {
       pairKey: local.pairKey || null,
       peerOnline: session.peerOnline || false,
-      rttMs: session.rttMs || null,
+      rttMs: session.rttMs ?? null,
       activeSession: session.activeSession || null,
       autoplayMuted: session.autoplayMuted || false
     };
   } catch {
-    return { pairKey: null, peerOnline: false, rttMs: null, activeSession: null };
+    return { pairKey: null, peerOnline: false, rttMs: null, activeSession: null, autoplayMuted: false };
   }
 }
 
-// Render UI based on status
+// Render UI based on current status
 async function render() {
   currentStatus = await fetchStatus();
   const pairKey = currentStatus.pairKey;
@@ -130,58 +141,70 @@ async function render() {
   const rttMs = currentStatus.rttMs;
   const isMuted = Boolean(currentStatus.autoplayMuted || activeSession?.autoplayMuted || activeSession?.isMuted);
 
-  // Determine state
   const isSyncing = Boolean(pairKey && activeSession);
   const isPairedIdle = Boolean(pairKey && !activeSession);
   const isUnpaired = !pairKey;
 
-  // Toggle views
+  // Toggle screens
   viewUnpaired.classList.toggle('hidden', !isUnpaired);
   viewPairedIdle.classList.toggle('hidden', !isPairedIdle);
   viewSyncing.classList.toggle('hidden', !isSyncing);
 
-  // Header status indicator dot
-  if (headerStatusIndicator) {
-    const headerDot = headerStatusIndicator.querySelector('.status-dot');
-    if (isSyncing || (isPairedIdle && peerOnline)) {
-      headerStatusIndicator.classList.remove('hidden');
-      headerDot.className = 'status-dot dot-emerald';
-    } else if (isPairedIdle && !peerOnline) {
-      headerStatusIndicator.classList.remove('hidden');
-      headerDot.className = 'status-dot';
+  // Update Header Status Chip
+  if (isUnpaired) {
+    chipIdle.classList.remove('hidden');
+    chipStandby.classList.add('hidden');
+    chipSyncing.classList.add('hidden');
+  } else if (isPairedIdle) {
+    chipIdle.classList.add('hidden');
+    chipStandby.classList.remove('hidden');
+    chipSyncing.classList.add('hidden');
+
+    if (peerOnline) {
+      standbyHeaderDot.className = 'status-dot dot-emerald';
+      standbyHeaderText.textContent = `${rttMs ?? 0}ms`;
     } else {
-      headerStatusIndicator.classList.add('hidden');
+      standbyHeaderDot.className = 'status-dot dot-muted';
+      standbyHeaderText.textContent = 'STANDBY';
     }
+  } else if (isSyncing) {
+    chipIdle.classList.add('hidden');
+    chipStandby.classList.add('hidden');
+    chipSyncing.classList.remove('hidden');
   }
 
+  // Populate 1B Paired Standby
   if (isPairedIdle) {
     idleKeyValue.textContent = pairKey;
     if (peerOnline) {
       idleStatusDot.className = 'status-dot dot-emerald';
-      idleStatusText.textContent = `Partner online · ${rttMs ?? 0}ms`;
-      idleStatusText.classList.remove('text-amber');
+      idleStatusText.textContent = 'Partner online';
+      standbySubdot.className = 'status-dot dot-emerald';
+      standbySubtext.textContent = 'Synced peer ready';
     } else {
-      idleStatusDot.className = 'status-dot';
+      idleStatusDot.className = 'status-dot dot-muted';
       idleStatusText.textContent = 'Waiting for partner…';
-      idleStatusText.classList.remove('text-amber');
+      standbySubdot.className = 'status-dot dot-muted';
+      standbySubtext.textContent = 'Waiting for partner…';
     }
   }
 
+  // Populate 1C Active Sync
   if (isSyncing) {
     syncDomain.textContent = extractDomain(activeSession);
+    syncPing.textContent = `${rttMs ?? 0}ms`;
+    syncStatusDot.className = 'status-dot dot-emerald';
+    syncStatusText.textContent = 'p2p locked · buffer match';
+
     if (isMuted) {
-      syncStatusDot.className = 'status-dot dot-amber';
-      syncStatusText.textContent = 'Audio muted — click video tab to unmute';
-      syncStatusText.classList.add('text-amber');
+      syncMutedWarning.classList.remove('hidden');
     } else {
-      syncStatusDot.className = 'status-dot dot-emerald';
-      syncStatusText.textContent = `LIVE · ${rttMs ?? 0}ms`;
-      syncStatusText.classList.remove('text-amber');
+      syncMutedWarning.classList.add('hidden');
     }
   }
 }
 
-// Primary pick video action
+// Handlers
 async function handlePickVideo() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -190,7 +213,7 @@ async function handlePickVideo() {
       return;
     }
     const res = await sendSw({ target: 'sw', type: 'START_PICK_FLOW', tabId: tab.id });
-    if (res && res.inviteUrl) {
+    if (res?.inviteUrl) {
       await copyText(res.inviteUrl);
     }
   } finally {
@@ -198,20 +221,23 @@ async function handlePickVideo() {
   }
 }
 
-// Connect form submit
 async function handleConnect(e) {
   e.preventDefault();
   const pairKey = inputPairKey.value.trim();
   if (!pairKey) return;
   inputPairKey.disabled = true;
-  await sendSw({ target: 'sw', type: 'SET_PAIR_KEY', pairKey });
-  inputPairKey.disabled = false;
-  inputPairKey.value = '';
-  if (detailsPairKey) detailsPairKey.removeAttribute('open');
-  await render();
+  btnConnect.disabled = true;
+  try {
+    await sendSw({ target: 'sw', type: 'SET_PAIR_KEY', pairKey });
+    inputPairKey.value = '';
+    if (detailsPairKey) detailsPairKey.removeAttribute('open');
+    await render();
+  } finally {
+    inputPairKey.disabled = false;
+    btnConnect.disabled = false;
+  }
 }
 
-// Copy invite link
 async function handleCopyInvite() {
   if (!currentStatus?.pairKey) return;
   const inviteUrl = `${INVITE_BASE_URL}#pair=${encodeURIComponent(currentStatus.pairKey)}`;
@@ -221,29 +247,34 @@ async function handleCopyInvite() {
   }
 }
 
-// Unpair
 async function handleUnpair() {
   await sendSw({ target: 'sw', type: 'UNPAIR' });
   await render();
 }
 
-// End Session
 async function handleEndSession() {
-  await sendSw({ target: 'sw', type: 'END_SESSION' });
-  await render();
+  btnEndSession.disabled = true;
+  try {
+    await sendSw({ target: 'sw', type: 'END_SESSION' });
+    await render();
+  } finally {
+    btnEndSession.disabled = false;
+  }
 }
 
-// Resync Now
 async function handleResync() {
   btnResync.disabled = true;
-  const origText = btnResync.querySelector('span').textContent;
-  btnResync.querySelector('span').textContent = 'Resyncing…';
-  await sendSw({ target: 'sw', type: 'RESYNC_NOW' });
-  setTimeout(() => {
-    btnResync.disabled = false;
-    btnResync.querySelector('span').textContent = origText;
-  }, 600);
-  await render();
+  const origText = resyncBtnText.textContent;
+  resyncBtnText.textContent = 'Resyncing…';
+  try {
+    await sendSw({ target: 'sw', type: 'RESYNC_NOW' });
+  } finally {
+    setTimeout(() => {
+      btnResync.disabled = false;
+      resyncBtnText.textContent = origText;
+    }, 600);
+    await render();
+  }
 }
 
 // Wire Event Listeners
@@ -256,14 +287,14 @@ btnEndSession.addEventListener('click', handleEndSession);
 btnResync.addEventListener('click', handleResync);
 btnUnpairSync.addEventListener('click', handleUnpair);
 
-// Listen for storage updates
-if (chrome.storage && chrome.storage.onChanged) {
+// Listen for storage changes
+if (chrome.storage?.onChanged) {
   chrome.storage.onChanged.addListener(() => {
     render();
   });
 }
 
-// Initial render + 1s periodic poll
+// Initial render + 1s periodic telemetry poll
 render();
 const pollTimer = setInterval(render, 1000);
 window.addEventListener('unload', () => clearInterval(pollTimer));

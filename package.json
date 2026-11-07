@@ -9,6 +9,9 @@
     "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
+    "@fontsource/instrument-sans": "^5.3.0",
+    "@fontsource/source-code-pro": "^5.3.1",
+    "@fontsource/wix-madefor-display": "^5.3.0",
     "esbuild": "^0.25.0",
     "trystero": "^0.22.0"
   }

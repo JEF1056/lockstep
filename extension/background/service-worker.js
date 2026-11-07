@@ -90,13 +90,52 @@ async function ensureOffscreen() {
 }
 
 /**
+ * Auto-generate default 'Viewer <3-digit>' if unset or retrieve saved displayName.
+ */
+async function getOrCreateDisplayName() {
+  const { displayName } = await chrome.storage.local.get(['displayName']);
+  if (displayName && typeof displayName === 'string' && displayName.trim().length > 0) {
+    return displayName.trim().slice(0, 24);
+  }
+  const randomNum = Math.floor(Math.random() * 900) + 100;
+  const newName = `Viewer ${randomNum}`;
+  await chrome.storage.local.set({ displayName: newName });
+  return newName;
+}
+
+/**
+ * Broadcast current displayName and isHost status to offscreen and room peers.
+ */
+async function syncSelfMetaToOffscreen() {
+  try {
+    const { displayName, isRoomOwner } = await chrome.storage.local.get(['displayName', 'isRoomOwner']);
+    const session = await getSessionState();
+    const isHost = Boolean(session.activeSession?.isHost || isRoomOwner);
+    const name = (displayName && typeof displayName === 'string' && displayName.trim().length > 0)
+      ? displayName.trim().slice(0, 24)
+      : await getOrCreateDisplayName();
+    await sendToOffscreen({
+      type: 'UPDATE_SELF_META',
+      selfMeta: { name, isHost }
+    });
+  } catch (err) {
+    console.warn('[Lockstep SW] syncSelfMetaToOffscreen failed:', err);
+  }
+}
+
+/**
  * Joins an offscreen room and persists returned peerId.
  * Normalizes pairKey to trimmed lowercase.
  */
 async function joinOffscreenRoom(pairKey) {
   if (!pairKey) return null;
   const normalizedKey = String(pairKey).trim().toLowerCase();
-  const resp = await sendToOffscreen({ type: 'JOIN_ROOM', pairKey: normalizedKey });
+  const displayName = await getOrCreateDisplayName();
+  const { isRoomOwner } = await chrome.storage.local.get(['isRoomOwner']);
+  const session = await getSessionState();
+  const isHost = Boolean(session.activeSession?.isHost || isRoomOwner);
+  const selfMeta = { name: displayName, isHost };
+  const resp = await sendToOffscreen({ type: 'JOIN_ROOM', pairKey: normalizedKey, selfMeta });
   if (resp?.selfId) {
     await chrome.storage.local.set({ peerId: resp.selfId });
   }
@@ -160,7 +199,7 @@ async function updateBadge(activeSession, isMuted) {
  */
 async function getSessionState() {
   if (chrome.storage?.session) {
-    return await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted', 'pendingReload']);
+    return await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted', 'pendingReload', 'peers', 'peerCount']);
   }
   return {};
 }
@@ -261,8 +300,10 @@ async function harvestInviteUrl(tabId, url) {
   if (!parsed || !parsed.pairKey) return false;
 
   const pairKey = String(parsed.pairKey).trim().toLowerCase();
-  await chrome.storage.local.set({ pairKey });
+  await chrome.storage.local.set({ pairKey, isRoomOwner: false });
+  await chrome.storage.local.remove(['kickedNotice']);
   await joinOffscreenRoom(pairKey);
+  await syncSelfMetaToOffscreen();
 
   if (parsed.pageUrl) {
     // Signal paired state briefly on invite landing tab before setting activeSession / video navigation
@@ -383,6 +424,8 @@ async function initialize() {
     }).catch(() => {});
   }
 
+  await getOrCreateDisplayName();
+
   const { pairKey } = await chrome.storage.local.get(['pairKey']);
   if (pairKey) {
     await joinOffscreenRoom(pairKey);
@@ -424,15 +467,19 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
   const session = await getSessionState();
   if (session.activeSession && session.activeSession.tabId === tabId) {
-    await sendToOffscreen({
-      type: 'RTC_SEND',
-      payload: { type: 'SESSION_END' }
-    });
+    const shouldBroadcast = Boolean(session.activeSession?.isHost || (session.peerCount || 0) <= 1);
+    if (shouldBroadcast) {
+      await sendToOffscreen({
+        type: 'RTC_SEND',
+        payload: { type: 'SESSION_END' }
+      });
+    }
     await setSessionState({
       activeSession: null,
       autoplayMuted: false
     });
     await updateBadge(null, false);
+    await syncSelfMetaToOffscreen();
     if (session.pendingReload) {
       await setSessionState({ pendingReload: false });
       chrome.runtime.reload();
@@ -470,16 +517,20 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
         ).catch(() => {});
 
-        await sendToOffscreen({
-          type: 'RTC_SEND',
-          payload: { type: 'SESSION_END' }
-        });
+        const shouldBroadcast = Boolean(session.activeSession?.isHost || (session.peerCount || 0) <= 1);
+        if (shouldBroadcast) {
+          await sendToOffscreen({
+            type: 'RTC_SEND',
+            payload: { type: 'SESSION_END' }
+          });
+        }
 
         await setSessionState({
           activeSession: null,
           autoplayMuted: false
         });
         await updateBadge(null, false);
+        await syncSelfMetaToOffscreen();
       }
     }
   }
@@ -510,6 +561,9 @@ async function handleOffscreenMessage(message, sendResponse) {
   const { type } = message;
 
   if (type === 'OFFSCREEN_READY') {
+    if (message.selfId) {
+      await chrome.storage.local.set({ peerId: message.selfId });
+    }
     const { pairKey } = await chrome.storage.local.get(['pairKey']);
     if (pairKey) {
       await joinOffscreenRoom(pairKey);
@@ -519,20 +573,26 @@ async function handleOffscreenMessage(message, sendResponse) {
   }
 
   if (type === 'PEER_STATUS') {
-    const prevSession = await getSessionState();
     const peerOnline = Boolean(message.peerOnline);
     const rttMs = message.rttMs ?? null;
-    await setSessionState({ peerOnline, rttMs });
+    const peers = Array.isArray(message.peers) ? message.peers : [];
+    const peerCount = typeof message.peerCount === 'number' ? message.peerCount : peers.length;
+    await setSessionState({ peerOnline, rttMs, peers, peerCount });
     if (message.selfId) {
       const { peerId } = await chrome.storage.local.get(['peerId']);
       if (!peerId) {
         await chrome.storage.local.set({ peerId: message.selfId });
       }
     }
+    sendResponse({ ok: true });
+    return;
+  }
 
-    // Late-joiner peer connected: broadcast current feed to peer so they sync up immediately
-    if (!prevSession.peerOnline && peerOnline && prevSession.activeSession?.tabId && prevSession.activeSession?.isHost) {
-      const hostSession = prevSession.activeSession;
+  if (type === 'PEER_JOINED') {
+    const peerId = message.peerId;
+    const session = await getSessionState();
+    if (session.activeSession?.tabId && session.activeSession?.isHost && peerId) {
+      const hostSession = session.activeSession;
       let snap = null;
       try {
         const frameOpts = typeof hostSession.frameId === 'number' ? { frameId: hostSession.frameId } : undefined;
@@ -545,15 +605,16 @@ async function handleOffscreenMessage(message, sendResponse) {
 
       await sendToOffscreen({
         type: 'RTC_SEND',
+        targetPeerId: peerId,
         payload: {
           type: 'SHARE_FEED',
           pageUrl: hostSession.pageUrl,
           sourceHint: hostSession.sourceHint || null,
-          state: snap?.state || null
+          state: snap?.state || null,
+          timestamp: Date.now()
         }
       });
     }
-
     sendResponse({ ok: true });
     return;
   }
@@ -603,8 +664,9 @@ async function handleOffscreenMessage(message, sendResponse) {
         autoplayMuted: false
       });
       await updateBadge(activeSession, false);
+      await syncSelfMetaToOffscreen();
 
-      const deliverFeed = (tId) => {
+      const deliverFeed = async (tId) => {
         if (payload.sourceHint) {
           chrome.tabs.sendMessage(
             tId,
@@ -615,6 +677,17 @@ async function handleOffscreenMessage(message, sendResponse) {
         chrome.tabs.sendMessage(
           tId,
           { target: 'content', type: 'SCAN_VIDEOS' }
+        ).catch(() => {});
+        const sState = await getSessionState();
+        chrome.tabs.sendMessage(
+          tId,
+          {
+            target: 'content',
+            type: 'APPLY_INITIAL_STATE',
+            state: payload.state,
+            rttMs: message.peerRttMs ?? sState.rttMs ?? 0,
+            clockOffsetMs: message.peerClockOffsetMs ?? null
+          }
         ).catch(() => {});
       };
 
@@ -646,7 +719,8 @@ async function handleOffscreenMessage(message, sendResponse) {
             target: 'content',
             type: 'REMOTE_SYNC',
             msg: payload,
-            rttMs: session.rttMs ?? 0
+            rttMs: message.peerRttMs ?? session.rttMs ?? 0,
+            clockOffsetMs: message.peerClockOffsetMs ?? null
           },
           typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
         ).catch(() => {});
@@ -670,11 +744,52 @@ async function handleOffscreenMessage(message, sendResponse) {
         autoplayMuted: false
       });
       await updateBadge(null, false);
+      await syncSelfMetaToOffscreen();
       sendResponse({ ok: true });
       if (session.pendingReload) {
         await setSessionState({ pendingReload: false });
         chrome.runtime.reload();
       }
+      return;
+    }
+
+    // Handle incoming KICK_PEER
+    if (payloadType === 'KICK_PEER') {
+      const targetPeerId = payload.targetPeerId;
+      const { peerId } = await chrome.storage.local.get(['peerId']);
+      if (targetPeerId && peerId && targetPeerId === peerId) {
+        if (armedPickerTabId) {
+          await cancelArmedPicker(armedPickerTabId);
+        }
+        const session = await getSessionState();
+        if (session.activeSession?.tabId) {
+          chrome.tabs.sendMessage(
+            session.activeSession.tabId,
+            { target: 'content', type: 'DETACH_SYNC' },
+            typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
+          ).catch(() => {});
+        }
+        await chrome.storage.local.remove(['pairKey', 'isRoomOwner']);
+        await chrome.storage.local.set({ kickedNotice: true });
+        await setSessionState({
+          activeSession: null,
+          peerOnline: false,
+          rttMs: null,
+          peers: [],
+          peerCount: 0,
+          autoplayMuted: false
+        });
+        await updateBadge(null, false);
+        await sendToOffscreen({ type: 'LEAVE_ROOM' });
+        await chrome.offscreen?.closeDocument?.().catch(() => {});
+      } else if (targetPeerId) {
+        await sendToOffscreen({
+          type: 'KICK_PEER',
+          targetPeerId,
+          broadcast: false
+        });
+      }
+      sendResponse({ ok: true });
       return;
     }
 
@@ -689,20 +804,41 @@ async function handleSwMessage(message, sender, sendResponse) {
   const { type } = message;
 
   if (type === 'GET_STATUS') {
-    let local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo']);
+    let local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo', 'displayName', 'isRoomOwner', 'kickedNotice']);
     let livePeerOnline = null;
     let liveRttMs = null;
+    let livePeers = null;
+    let livePeerCount = null;
     if (local.pairKey) {
       const roomRes = await joinOffscreenRoom(local.pairKey);
       if (roomRes && typeof roomRes === 'object') {
         livePeerOnline = roomRes.peerOnline;
         liveRttMs = roomRes.rttMs;
+        if (roomRes.peers) livePeers = roomRes.peers;
+        if (typeof roomRes.peerCount === 'number') livePeerCount = roomRes.peerCount;
       }
-      local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo']);
+      local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo', 'displayName', 'isRoomOwner', 'kickedNotice']);
     }
+    const displayName = local.displayName || (await getOrCreateDisplayName());
     const session = await getSessionState();
     const effectivePeerOnline = livePeerOnline !== null && livePeerOnline !== undefined ? Boolean(livePeerOnline) : Boolean(session.peerOnline);
     const effectiveRttMs = liveRttMs !== null && liveRttMs !== undefined ? liveRttMs : (session.rttMs ?? null);
+    const effectivePeers = livePeers !== null && livePeers !== undefined ? livePeers : (session.peers || []);
+    const effectivePeerCount = livePeerCount !== null && livePeerCount !== undefined ? livePeerCount : (session.peerCount ?? effectivePeers.length);
+
+    if (livePeers !== null || livePeerCount !== null) {
+      await setSessionState({ peers: effectivePeers, peerCount: effectivePeerCount });
+    }
+
+    const isRoomOwner = Boolean(local.isRoomOwner);
+    const canKick = Boolean(session.activeSession?.isHost || isRoomOwner);
+    const kickedNotice = Boolean(local.kickedNotice);
+
+    // One-shot kickedNotice: clear in storage after reading in GET_STATUS
+    if (local.kickedNotice) {
+      await chrome.storage.local.remove(['kickedNotice']);
+    }
+
     const version = chrome.runtime.getManifest?.()?.version || '';
     if (!session.activeSession) {
       checkDiskReload().catch(() => {});
@@ -720,12 +856,34 @@ async function handleSwMessage(message, sender, sendResponse) {
       updateInfo: local.updateInfo || null,
       pairKey: local.pairKey || null,
       peerId: local.peerId || null,
+      displayName,
+      isRoomOwner,
+      canKick,
+      peers: effectivePeers,
+      peerCount: effectivePeerCount,
+      kickedNotice,
       peerOnline: effectivePeerOnline,
       rttMs: effectiveRttMs,
       activeSession: session.activeSession || null,
       autoplayMuted: Boolean(session.autoplayMuted),
       inviteUrl
     });
+    return;
+  }
+
+  if (type === 'SET_DISPLAY_NAME') {
+    const rawName = message.displayName || '';
+    const trimmed = String(rawName).trim().slice(0, 24);
+    const displayName = trimmed || (await getOrCreateDisplayName());
+    await chrome.storage.local.set({ displayName });
+    await syncSelfMetaToOffscreen();
+    sendResponse({ ok: true, displayName });
+    return;
+  }
+
+  if (type === 'DISMISS_KICKED_NOTICE') {
+    await chrome.storage.local.remove(['kickedNotice']);
+    sendResponse({ ok: true });
     return;
   }
 
@@ -740,8 +898,10 @@ async function handleSwMessage(message, sender, sendResponse) {
     const rawKey = message.pairKey;
     const pairKey = rawKey ? String(rawKey).trim().toLowerCase() : null;
     if (pairKey) {
-      await chrome.storage.local.set({ pairKey });
+      await chrome.storage.local.set({ pairKey, isRoomOwner: false });
+      await chrome.storage.local.remove(['kickedNotice']);
       await joinOffscreenRoom(pairKey);
+      await syncSelfMetaToOffscreen();
     }
     sendResponse({ ok: true, pairKey });
     return;
@@ -755,12 +915,14 @@ async function handleSwMessage(message, sender, sendResponse) {
     const activeTabId = session.activeSession?.tabId;
     const activeFrameId = session.activeSession?.frameId;
 
-    // Remove pairKey and reset session state FIRST before teardown
-    await chrome.storage.local.remove(['pairKey']);
+    // Remove pairKey, isRoomOwner, kickedNotice and reset session state FIRST before teardown
+    await chrome.storage.local.remove(['pairKey', 'isRoomOwner', 'kickedNotice']);
     await setSessionState({
       activeSession: null,
       peerOnline: false,
       rttMs: null,
+      peers: [],
+      peerCount: 0,
       autoplayMuted: false
     });
     await updateBadge(null, false);
@@ -816,8 +978,10 @@ async function handleSwMessage(message, sender, sendResponse) {
     let { pairKey } = await chrome.storage.local.get(['pairKey']);
     if (!pairKey) {
       pairKey = generatePairKey();
-      await chrome.storage.local.set({ pairKey });
+      await chrome.storage.local.set({ pairKey, isRoomOwner: true });
+      await chrome.storage.local.remove(['kickedNotice']);
       await joinOffscreenRoom(pairKey);
+      await syncSelfMetaToOffscreen();
     }
 
     const tabId = message.tabId || sender?.tab?.id;
@@ -857,20 +1021,37 @@ async function handleSwMessage(message, sender, sendResponse) {
         typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
       ).catch(() => {});
     }
-    await sendToOffscreen({
-      type: 'RTC_SEND',
-      payload: { type: 'SESSION_END' }
-    });
+    const shouldBroadcast = Boolean(session.activeSession?.isHost || (session.peerCount || 0) <= 1);
+    if (shouldBroadcast) {
+      await sendToOffscreen({
+        type: 'RTC_SEND',
+        payload: { type: 'SESSION_END' }
+      });
+    }
     await setSessionState({
       activeSession: null,
       autoplayMuted: false
     });
     await updateBadge(null, false);
+    await syncSelfMetaToOffscreen();
     sendResponse({ ok: true });
     if (session.pendingReload) {
       await setSessionState({ pendingReload: false });
       chrome.runtime.reload();
     }
+    return;
+  }
+
+  if (type === 'KICK_PEER') {
+    const targetPeerId = message.targetPeerId;
+    if (targetPeerId) {
+      await sendToOffscreen({
+        type: 'KICK_PEER',
+        targetPeerId,
+        broadcast: true
+      });
+    }
+    sendResponse({ ok: true });
     return;
   }
 
@@ -945,6 +1126,7 @@ async function handleSwMessage(message, sender, sendResponse) {
             target: 'content',
             type: 'ATTACH_SYNC',
             selfId: peerId,
+            isHost: true,
             initialState: null
           },
           { frameId }
@@ -975,6 +1157,7 @@ async function handleSwMessage(message, sender, sendResponse) {
       activeSession,
       autoplayMuted: false
     });
+    await syncSelfMetaToOffscreen();
     await updateBadge(activeSession, false);
 
     // Broadcast feed share via RTC
@@ -1045,6 +1228,7 @@ async function handleSwMessage(message, sender, sendResponse) {
       if (message.frameOrigin !== undefined) activeSession.frameOrigin = message.frameOrigin;
 
       await setSessionState({ activeSession });
+      await syncSelfMetaToOffscreen();
 
       chrome.tabs.sendMessage(
         tabId,
@@ -1052,6 +1236,7 @@ async function handleSwMessage(message, sender, sendResponse) {
           target: 'content',
           type: 'ATTACH_SYNC',
           selfId: peerId,
+          isHost: Boolean(activeSession.isHost),
           initialState: initState
         },
         { frameId }

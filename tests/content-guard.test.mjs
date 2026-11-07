@@ -1046,7 +1046,9 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     assert.ok(pointerHandlers.length > 0);
 
     // Simulate user interaction
-    pointerHandlers[0].fn();
+    for (const h of [...pointerHandlers]) {
+      h.fn();
+    }
 
     // Video is unmuted and AUTOPLAY_MUTED { muted: false } sent
     assert.equal(mockVideo.muted, false);
@@ -1128,13 +1130,13 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     mockVideo.currentTime = 10.0;
     mockVideo.playbackRate = 1.0;
 
-    // Simulate remote heartbeat with 150ms drift (drift within 40-400ms triggers NUDGE)
+    // Simulate remote heartbeat with 150ms drift (drift within 12-250ms triggers NUDGE)
     const remoteNudge = {
       type: 'REMOTE_SYNC',
       msg: {
         type: 'HEARTBEAT',
         action: 'HEARTBEAT',
-        seq: 1,
+        seq: 2,
         peerId: 'peerLeader',
         paused: false,
         time: 10.15,
@@ -1154,9 +1156,9 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
 
     assert.equal(res.ok, true);
     assert.equal(res.resolution.action, 'NUDGE');
-    assert.equal(mockVideo.playbackRate, 1.04);
+    assert.equal(mockVideo.playbackRate, 1.075);
 
-    // REQUEST_STATE_SNAPSHOT should report baseRate (1.0), NOT nudged 1.04
+    // REQUEST_STATE_SNAPSHOT should report baseRate (1.0), NOT nudged 1.075
     let snap;
     onMessage({ type: 'REQUEST_STATE_SNAPSHOT' }, {}, (rSnap) => { snap = rSnap; });
     assert.equal(snap.state.rate, 1.0);
@@ -1167,7 +1169,7 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
       msg: {
         type: 'HEARTBEAT',
         action: 'HEARTBEAT',
-        seq: 1,
+        seq: 2,
         peerId: 'peerLeader',
         paused: false,
         time: 10.0,
@@ -1249,7 +1251,7 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     assert.ok(localMsg, 'Local play should emit LOCAL_SYNC_MSG');
     assert.equal(localMsg.msg.action, 'PLAY');
     assert.equal(localMsg.msg.peerId, 'peerA');
-    assert.equal(localMsg.msg.seq, 1);
+    assert.equal(localMsg.msg.seq, 2);
 
     // Initial baseRate should be 1
     let snap;
@@ -1285,7 +1287,7 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     onMessage({ type: 'REQUEST_STATE_SNAPSHOT' }, {}, (r) => { snap = r; });
     assert.equal(snap.state.rate, 1);
 
-    // 4. Trigger another local intent (pause) -> seq should advance to 2, proving engine wasn't wiped/recreated
+    // 4. Trigger another local intent (pause) -> seq should advance to 3, proving engine was preserved
     sentMessages = [];
     mockVideo.paused = true;
     for (const f of (mockVideo._listeners['pause'] || [])) f();
@@ -1294,6 +1296,79 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     assert.ok(pauseMsg, 'Local pause should emit LOCAL_SYNC_MSG');
     assert.equal(pauseMsg.msg.action, 'PAUSE');
     assert.equal(pauseMsg.msg.peerId, 'peerA');
-    assert.equal(pauseMsg.msg.seq, 2, 'seq should be 2, engine was preserved');
+    assert.equal(pauseMsg.msg.seq, 3, 'seq should be 3, engine was preserved');
+  });
+
+  test('follower isHost: false boots locked and never emits 0:00 on join until settled or interacted', async () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    // Follower joins room with initialState from host at time 42.0s
+    await new Promise(r => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'follower-1',
+        isHost: false,
+        initialState: {
+          time: 42.0,
+          paused: false,
+          rate: 1.0,
+          seq: 5,
+          seqOwner: 'host-leader'
+        }
+      }, {}, r);
+    });
+
+    // Follower local video initializes at 0:00
+    mockVideo.currentTime = 0;
+    mockVideo.paused = false;
+    sentMessages = [];
+
+    // Trigger video events that would normally emit local intents
+    for (const f of (mockVideo._listeners['play'] || [])) f();
+    for (const f of (mockVideo._listeners['timeupdate'] || [])) f();
+    for (const f of (mockVideo._listeners['seeking'] || [])) f();
+    for (const f of (mockVideo._listeners['seeked'] || [])) f();
+
+    // Verify ZERO LOCAL_SYNC_MSG emitted because followerBootLock is active!
+    const syncMsgs = sentMessages.filter(m => m.type === 'LOCAL_SYNC_MSG');
+    assert.equal(syncMsgs.length, 0, 'Follower boot lock must suppress all local sync messages on join');
+
+    // Now APPLY_INITIAL_STATE arrives
+    let applyRes;
+    await new Promise(r => {
+      onMessage({
+        type: 'APPLY_INITIAL_STATE',
+        state: {
+          time: 42.0,
+          paused: false,
+          rate: 1.0,
+          seq: 5,
+          seqOwner: 'host-leader'
+        },
+        rttMs: 50,
+        clockOffsetMs: 0
+      }, {}, (res) => {
+        applyRes = res;
+        r();
+      });
+    });
+    assert.equal(applyRes.ok, true);
+
+    // Fast-forward past settle time (450ms)
+    await new Promise(r => setTimeout(r, 500));
+
+    // Now a trusted user interaction (e.g. keydown or pointerdown) unlocks user actions
+    const pointerHandlers = windowListeners['pointerdown'] || [];
+    for (const h of [...pointerHandlers]) h.fn();
+
+    // Now local user pauses video -> should emit LOCAL_SYNC_MSG
+    sentMessages = [];
+    mockVideo.paused = true;
+    for (const f of (mockVideo._listeners['pause'] || [])) f();
+
+    const userPause = sentMessages.find(m => m.type === 'LOCAL_SYNC_MSG');
+    assert.ok(userPause, 'After unlock, user actions should emit LOCAL_SYNC_MSG');
+    assert.equal(userPause.msg.action, 'PAUSE');
+    assert.equal(userPause.msg.peerId, 'follower-1');
   });
 });

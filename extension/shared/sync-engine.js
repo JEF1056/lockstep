@@ -4,9 +4,9 @@
  * RTT dead-reckoning, drift deadband/nudge/snap thresholds.
  */
 
-export const ECHO_GUARD_MS = 300;
-export const DRIFT_NOOP_MS = 40;
-export const DRIFT_SNAP_MS = 400;
+export const ECHO_GUARD_MS = 250;
+export const DRIFT_NOOP_MS = 12;
+export const DRIFT_SNAP_MS = 250;
 export const RATE_NUDGE_FACTOR = 0.04;
 
 export function createSyncEngine(selfId) {
@@ -17,6 +17,15 @@ export function createSyncEngine(selfId) {
   return {
     getSeq() {
       return seq;
+    },
+
+    getSeqOwner() {
+      return seqOwner;
+    },
+
+    seed(initialSeq = 1, owner = '') {
+      seq = Math.max(seq, Number(initialSeq) || 0);
+      seqOwner = owner || seqOwner;
     },
 
     reset() {
@@ -80,7 +89,7 @@ export function createSyncEngine(selfId) {
      * Evaluates echo guard, Lamport logical clock tie-break, dead-reckoning,
      * and returns the required player adjustment (NOOP, NUDGE, SNAP, IGNORE).
      */
-    resolveRemote(msg, current = {}, rttMs = 0, now = Date.now()) {
+    resolveRemote(msg, current = {}, rttMs = 0, now = Date.now(), clockOffsetMs = null) {
       if (!msg || typeof msg !== 'object') {
         return { action: 'IGNORE', reason: 'invalid-msg', diff: 0 };
       }
@@ -96,17 +105,12 @@ export function createSyncEngine(selfId) {
       const msgPaused = Boolean(msg.paused);
       const isHeartbeat = msg.type === 'HEARTBEAT' || msgAction === 'HEARTBEAT';
 
-      // 1. Intent-scoped 300ms Echo Guard
-      // Blocks echo of our own action within 300ms, but passes opposite human actions
+      // 1. Intent-scoped Echo Guard
+      // Within ECHO_GUARD_MS, ONLY ignore as echo if msgPaused === lastLocalIntent.paused
+      // AND Math.abs((Number(msg.time) || 0) - lastLocalIntent.time) < 0.45 (never swallow rapid seeks to a different timestamp!).
       if (lastLocalIntent && (now - lastLocalIntent.timestamp < ECHO_GUARD_MS)) {
-        const localPaused = lastLocalIntent.paused;
-        const isOppositeAction = (localPaused && !msgPaused) || (!localPaused && msgPaused);
-
-        if (!isOppositeAction) {
-          // If remote is not opposite, check if it's an echo of the local intent
-          if (msgPaused === localPaused || msgAction === lastLocalIntent.action) {
-            return { action: 'IGNORE', reason: 'echo-guard', diff: 0 };
-          }
+        if (msgPaused === lastLocalIntent.paused && Math.abs((Number(msg.time) || 0) - lastLocalIntent.time) < 0.45) {
+          return { action: 'IGNORE', reason: 'echo-guard', diff: 0 };
         }
       }
 
@@ -131,12 +135,16 @@ export function createSyncEngine(selfId) {
         seq = Math.max(seq, msgSeq);
       }
 
-      // 3. RTT Dead-reckoning
-      const rtt = Math.max(0, Number(rttMs) || 0);
-      const oneWaySec = (rtt / 2) / 1000;
+      // 3. Cristian transit compensation / RTT Dead-reckoning
+      let transitSec;
+      if (typeof clockOffsetMs === 'number' && Number.isFinite(clockOffsetMs) && msg.timestamp > 0) {
+        transitSec = Math.max(0, Math.min(2.0, ((now + clockOffsetMs) - Number(msg.timestamp)) / 1000));
+      } else {
+        transitSec = (Math.max(0, Number(rttMs) || 0) / 2) / 1000;
+      }
       const remoteRate = Number(msg.rate) || 1;
       const remoteTime = Number(msg.time) || 0;
-      const estimatedRemoteTime = msgPaused ? remoteTime : remoteTime + (oneWaySec * remoteRate);
+      const estimatedRemoteTime = msgPaused ? remoteTime : remoteTime + transitSec * remoteRate;
 
       const currentTime = Number(current?.time) || 0;
       const currentPaused = Boolean(current?.paused);
@@ -171,23 +179,24 @@ export function createSyncEngine(selfId) {
           };
         }
 
-        // 40-400ms while playing: rate nudge +-4%
-        // If remote is ahead (diffMs > 0), speed up by +4%
-        // If remote is behind (diffMs < 0), slow down by -4%
-        const nudgeMultiplier = diffMs > 0 ? (1 + RATE_NUDGE_FACTOR) : (1 - RATE_NUDGE_FACTOR);
-        const nudgedRate = Number((remoteRate * nudgeMultiplier).toFixed(4));
+        // Proportional nudge: raw = (diffMs / 1000) * 0.5, clamp magnitude to [0.015, 0.10] preserving sign of diffMs
+        const raw = (diffMs / 1000) * 0.5;
+        const sign = diffMs >= 0 ? 1 : -1;
+        const mag = Math.max(0.015, Math.min(0.10, Math.abs(raw)));
+        const adj = sign * mag;
+        const targetRate = Number((remoteRate * (1 + adj)).toFixed(4));
 
         return {
           action: 'NUDGE',
           targetTime: estimatedRemoteTime,
           targetPaused: false,
-          targetRate: nudgedRate,
+          targetRate,
           diff: diffMs,
           pausedChanged: msgPaused !== currentPaused
         };
       }
 
-      // < 40ms: no-op
+      // < DRIFT_NOOP_MS (12ms): no-op
       return {
         action: 'NOOP',
         targetTime: estimatedRemoteTime,

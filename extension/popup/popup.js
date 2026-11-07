@@ -8,6 +8,11 @@ const updateVersionText = document.getElementById('update-version-text');
 const updateDownloadLink = document.getElementById('update-download-link');
 const btnUpdateReload = document.getElementById('btn-update-reload');
 
+// Identity Strip & Banners
+const inputDisplayName = document.getElementById('input-display-name');
+const kickedBanner = document.getElementById('kicked-banner');
+const btnDismissKicked = document.getElementById('btn-dismiss-kicked');
+
 const chipIdle = document.getElementById('chip-idle');
 const chipStandby = document.getElementById('chip-standby');
 const chipSyncing = document.getElementById('chip-syncing');
@@ -29,6 +34,7 @@ const btnConnect = document.getElementById('btn-connect');
 const idleStatusDot = document.getElementById('idle-status-dot');
 const idleStatusText = document.getElementById('idle-status-text');
 const idleKeyValue = document.getElementById('idle-key-value');
+const rosterIdle = document.getElementById('roster-idle');
 const btnPairedPick = document.getElementById('btn-paired-pick');
 const btnCopyInvite = document.getElementById('btn-copy-invite');
 const copyBtnText = document.getElementById('copy-btn-text');
@@ -41,6 +47,7 @@ const syncPing = document.getElementById('sync-ping');
 const syncStatusDot = document.getElementById('sync-status-dot');
 const syncStatusText = document.getElementById('sync-status-text');
 const syncMutedWarning = document.getElementById('sync-muted-warning');
+const rosterSync = document.getElementById('roster-sync');
 const btnEndSession = document.getElementById('btn-end-session');
 const endSessionBtnText = document.getElementById('end-session-btn-text');
 const btnResync = document.getElementById('btn-resync');
@@ -57,6 +64,8 @@ let copyTimeout = null;
 let copySyncTimeout = null;
 let copySyncFeedbackActive = false;
 let armedTabId = null;
+let displayNameDebounceTimer = null;
+let kickedNoticeDismissed = false;
 
 function isSupportedUrl(url) {
   return typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'));
@@ -127,14 +136,22 @@ function extractDomain(activeSession) {
 async function fetchStatus() {
   const res = await sendSw({ target: 'sw', type: 'GET_STATUS' });
   if (res && typeof res === 'object' && ('pairKey' in res || 'activeSession' in res)) {
-    return res;
+    return {
+      ...res,
+      displayName: res.displayName || '',
+      peers: Array.isArray(res.peers) ? res.peers : [],
+      peerCount: typeof res.peerCount === 'number' ? res.peerCount : (Array.isArray(res.peers) ? res.peers.length : (res.peerOnline ? 1 : 0)),
+      isRoomOwner: Boolean(res.isRoomOwner),
+      canKick: Boolean(res.canKick),
+      kickedNotice: Boolean(res.kickedNotice)
+    };
   }
 
   // Storage fallback
   try {
-    const local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo']);
+    const local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo', 'displayName']);
     const session = chrome.storage.session
-      ? await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted'])
+      ? await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted', 'peers', 'peerCount', 'isRoomOwner', 'canKick', 'kickedNotice'])
       : {};
     let inviteUrl = null;
     if (local.pairKey) {
@@ -144,6 +161,8 @@ async function fetchStatus() {
       }
       inviteUrl = `${INVITE_BASE_URL}#${hashParts.join('&')}`;
     }
+    const peers = Array.isArray(session.peers) ? session.peers : [];
+    const peerCount = typeof session.peerCount === 'number' ? session.peerCount : peers.length;
     return {
       pairKey: local.pairKey || null,
       peerOnline: session.peerOnline || false,
@@ -151,11 +170,120 @@ async function fetchStatus() {
       activeSession: session.activeSession || null,
       autoplayMuted: session.autoplayMuted || false,
       updateInfo: local.updateInfo || null,
-      inviteUrl
+      inviteUrl,
+      displayName: local.displayName || '',
+      peers,
+      peerCount,
+      isRoomOwner: Boolean(session.isRoomOwner),
+      canKick: Boolean(session.canKick),
+      kickedNotice: Boolean(session.kickedNotice)
     };
   } catch {
-    return { pairKey: null, peerOnline: false, rttMs: null, activeSession: null, autoplayMuted: false, updateInfo: null, inviteUrl: null };
+    return {
+      pairKey: null,
+      peerOnline: false,
+      rttMs: null,
+      activeSession: null,
+      autoplayMuted: false,
+      updateInfo: null,
+      inviteUrl: null,
+      displayName: '',
+      peers: [],
+      peerCount: 0,
+      isRoomOwner: false,
+      canKick: false,
+      kickedNotice: false
+    };
   }
+}
+
+// Render multi-person session roster into container
+function renderRoster(container, status, isSyncing) {
+  if (!container) return;
+  container.replaceChildren();
+
+  const peers = Array.isArray(status.peers) ? status.peers : [];
+  const totalInRoom = peers.length + 1;
+
+  // Header micro-row: SESSION · <N> IN ROOM
+  const header = document.createElement('div');
+  header.className = 'roster-header';
+  header.textContent = `SESSION · ${totalInRoom} IN ROOM`;
+  container.appendChild(header);
+
+  const list = document.createElement('div');
+  list.className = 'roster-list';
+
+  // Self row: emerald/cyan dot + <displayName> (You) + HOST badge if activeSession?.isHost || (!activeSession && status.isRoomOwner)
+  const selfRow = document.createElement('div');
+  selfRow.className = 'roster-row';
+
+  const selfDot = document.createElement('span');
+  selfDot.className = isSyncing ? 'status-dot dot-cyan' : 'status-dot dot-emerald';
+  selfRow.appendChild(selfDot);
+
+  const selfName = document.createElement('span');
+  selfName.className = 'roster-name self';
+  const rawDisplayName = typeof status.displayName === 'string' ? status.displayName.trim() : '';
+  selfName.textContent = rawDisplayName ? `${rawDisplayName} (You)` : 'You';
+  selfRow.appendChild(selfName);
+
+  const isHost = Boolean(status.activeSession?.isHost || (!status.activeSession && status.isRoomOwner));
+  if (isHost) {
+    const hostBadge = document.createElement('span');
+    hostBadge.className = 'badge-host';
+    hostBadge.textContent = 'HOST';
+    selfRow.appendChild(hostBadge);
+  }
+  list.appendChild(selfRow);
+
+  // Peer rows: emerald dot + peer.name || ('Peer ' + String(peer.peerId).slice(0, 4)) + HOST badge if peer.isHost + monospace ${peer.rttMs ?? '…'}ms + (when status.canKick is true) compact red .btn-kick-peer button
+  for (const peer of peers) {
+    const peerRow = document.createElement('div');
+    peerRow.className = 'roster-row';
+
+    const peerDot = document.createElement('span');
+    peerDot.className = 'status-dot dot-emerald';
+    peerRow.appendChild(peerDot);
+
+    const peerName = document.createElement('span');
+    peerName.className = 'roster-name';
+    const rawPeerName = typeof peer.name === 'string' ? peer.name.trim() : '';
+    peerName.textContent = rawPeerName || `Peer ${String(peer.peerId || '').slice(0, 4)}`;
+    peerRow.appendChild(peerName);
+
+    if (peer.isHost) {
+      const peerHostBadge = document.createElement('span');
+      peerHostBadge.className = 'badge-host';
+      peerHostBadge.textContent = 'HOST';
+      peerRow.appendChild(peerHostBadge);
+    }
+
+    const latency = document.createElement('span');
+    latency.className = 'roster-latency';
+    latency.textContent = `${peer.rttMs ?? '…'}ms`;
+    peerRow.appendChild(latency);
+
+    if (status.canKick && peer.peerId) {
+      const btnKick = document.createElement('button');
+      btnKick.type = 'button';
+      btnKick.className = 'btn-kick-peer';
+      btnKick.textContent = 'Kick';
+      btnKick.title = 'Remove from session';
+      btnKick.setAttribute('aria-label', `Kick ${rawPeerName || peer.peerId}`);
+      btnKick.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        btnKick.disabled = true;
+        await sendSw({ target: 'sw', type: 'KICK_PEER', targetPeerId: peer.peerId });
+        await render();
+      });
+      peerRow.appendChild(btnKick);
+    }
+
+    list.appendChild(peerRow);
+  }
+
+  container.appendChild(list);
 }
 
 // Render UI based on current status
@@ -164,9 +292,17 @@ async function render() {
   const pairKey = currentStatus.pairKey;
   const activeSession = currentStatus.activeSession;
   const peerOnline = Boolean(currentStatus.peerOnline);
+  const peerCount = typeof currentStatus.peerCount === 'number'
+    ? currentStatus.peerCount
+    : (Array.isArray(currentStatus.peers) ? currentStatus.peers.length : (peerOnline ? 1 : 0));
   const rttMs = currentStatus.rttMs;
   const isMuted = Boolean(currentStatus.autoplayMuted || activeSession?.autoplayMuted || activeSession?.isMuted);
   const updateInfo = currentStatus.updateInfo;
+
+  // Populate self-identification strip when not focused
+  if (inputDisplayName && document.activeElement !== inputDisplayName) {
+    inputDisplayName.value = currentStatus.displayName || '';
+  }
 
   // Toggle update banner
   if (updateBanner) {
@@ -187,6 +323,19 @@ async function render() {
   const isPairedIdle = Boolean(pairKey && !activeSession);
   const isUnpaired = !pairKey;
 
+  // Reset kicked notice dismissal if paired
+  if (pairKey) {
+    kickedNoticeDismissed = false;
+  }
+  // Toggle kicked banner in 1A
+  if (kickedBanner) {
+    if (isUnpaired && currentStatus.kickedNotice && !kickedNoticeDismissed) {
+      kickedBanner.classList.remove('hidden');
+    } else {
+      kickedBanner.classList.add('hidden');
+    }
+  }
+
   // Toggle screens
   viewUnpaired.classList.toggle('hidden', !isUnpaired);
   viewPairedIdle.classList.toggle('hidden', !isPairedIdle);
@@ -202,7 +351,7 @@ async function render() {
     chipStandby.classList.remove('hidden');
     chipSyncing.classList.add('hidden');
 
-    if (peerOnline) {
+    if (peerOnline || peerCount > 0) {
       standbyHeaderDot.className = 'status-dot dot-emerald';
       standbyHeaderText.textContent = `${rttMs ?? 0}ms`;
     } else {
@@ -233,31 +382,36 @@ async function render() {
   // Populate 1B Paired Standby
   if (isPairedIdle) {
     idleKeyValue.textContent = pairKey;
-    if (peerOnline) {
-      idleStatusDot.className = 'status-dot dot-emerald';
-      idleStatusText.textContent = 'Partner online';
-    } else {
+    if (peerCount === 0) {
       idleStatusDot.className = 'status-dot dot-muted';
-      idleStatusText.textContent = 'Waiting for partner…';
+      idleStatusText.textContent = 'Waiting for peers…';
+    } else if (peerCount === 1) {
+      idleStatusDot.className = 'status-dot dot-emerald';
+      idleStatusText.textContent = '1 peer online';
+    } else {
+      idleStatusDot.className = 'status-dot dot-emerald';
+      idleStatusText.textContent = `${peerCount} peers online`;
     }
+    renderRoster(rosterIdle, currentStatus, false);
   }
 
   // Populate 1C Active Sync
   if (isSyncing) {
     syncDomain.textContent = extractDomain(activeSession);
 
-    if (peerOnline) {
+    if (peerOnline || peerCount > 0) {
       chipSyncing.classList.remove('waiting');
       if (syncChipDot) syncChipDot.className = 'status-dot dot-cyan animate-pulse';
       if (syncChipText) syncChipText.textContent = 'LOCKED';
       syncPing.textContent = `${rttMs ?? 0}ms`;
       syncStatusDot.className = 'status-dot dot-emerald';
       syncStatusText.textContent = 'p2p locked · buffer match';
-      if (syncFooterHint) syncFooterHint.textContent = 'Both browsers synced';
+      if (syncFooterHint) syncFooterHint.textContent = `${peerCount + 1} browsers synced`;
 
       btnEndSession.className = 'btn btn-destructive flex-1';
       btnEndSession.style.order = '1';
-      if (endSessionBtnText) endSessionBtnText.textContent = 'End Session';
+      const isLeave = Boolean(peerCount >= 2 && !activeSession?.isHost);
+      if (endSessionBtnText) endSessionBtnText.textContent = isLeave ? 'Leave' : 'End Session';
 
       btnResync.classList.remove('hidden');
       btnResync.style.order = '2';
@@ -295,6 +449,8 @@ async function render() {
     } else {
       syncMutedWarning.classList.add('hidden');
     }
+
+    renderRoster(rosterSync, currentStatus, true);
   }
 }
 
@@ -386,7 +542,13 @@ async function handleUnpair() {
     activeSession: null,
     autoplayMuted: false,
     updateInfo: currentStatus?.updateInfo || null,
-    inviteUrl: null
+    inviteUrl: null,
+    displayName: currentStatus?.displayName || '',
+    peers: [],
+    peerCount: 0,
+    isRoomOwner: false,
+    canKick: false,
+    kickedNotice: false
   };
   viewUnpaired.classList.remove('hidden');
   viewPairedIdle.classList.add('hidden');
@@ -397,6 +559,19 @@ async function handleUnpair() {
 
   await sendSw({ target: 'sw', type: 'UNPAIR' });
   await render();
+}
+
+// Display Name Debounced Saving
+function saveDisplayName(val) {
+  if (displayNameDebounceTimer) {
+    clearTimeout(displayNameDebounceTimer);
+    displayNameDebounceTimer = null;
+  }
+  const displayName = typeof val === 'string' ? val.trim() : '';
+  if (currentStatus) {
+    currentStatus.displayName = displayName;
+  }
+  sendSw({ target: 'sw', type: 'SET_DISPLAY_NAME', displayName });
 }
 
 async function handleEndSession() {
@@ -425,6 +600,35 @@ async function handleResync() {
 }
 
 // Wire Event Listeners
+if (inputDisplayName) {
+  inputDisplayName.addEventListener('input', () => {
+    if (displayNameDebounceTimer) clearTimeout(displayNameDebounceTimer);
+    displayNameDebounceTimer = setTimeout(() => {
+      saveDisplayName(inputDisplayName.value);
+    }, 350);
+  });
+
+  inputDisplayName.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveDisplayName(inputDisplayName.value);
+      inputDisplayName.blur();
+    }
+  });
+
+  inputDisplayName.addEventListener('blur', () => {
+    saveDisplayName(inputDisplayName.value);
+  });
+}
+
+if (btnDismissKicked) {
+  btnDismissKicked.addEventListener('click', async () => {
+    kickedNoticeDismissed = true;
+    if (kickedBanner) kickedBanner.classList.add('hidden');
+    await sendSw({ target: 'sw', type: 'DISMISS_KICKED_NOTICE' });
+  });
+}
+
 btnUnpairedPick.addEventListener('click', handlePickVideo);
 formConnect.addEventListener('submit', handleConnect);
 btnPairedPick.addEventListener('click', handlePairedPick);

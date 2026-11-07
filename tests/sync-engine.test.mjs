@@ -168,14 +168,41 @@ describe('Sync Engine - Lamport Clock & Tie-Breaking', () => {
     engine.reset();
     assert.equal(engine.getSeq(), 0);
   });
+
+  test('seed() initializes or advances seq and seqOwner', () => {
+    const engine = createSyncEngine('peerA');
+    assert.equal(engine.getSeq(), 0);
+    assert.equal(engine.getSeqOwner(), '');
+
+    engine.seed(5, 'hostPeer');
+    assert.equal(engine.getSeq(), 5);
+    assert.equal(engine.getSeqOwner(), 'hostPeer');
+
+    // seeding with smaller seq does not regress seq, but can update owner if provided
+    engine.seed(3, 'otherPeer');
+    assert.equal(engine.getSeq(), 5);
+    assert.equal(engine.getSeqOwner(), 'otherPeer');
+
+    // seeding without owner retains current owner
+    engine.seed(10);
+    assert.equal(engine.getSeq(), 10);
+    assert.equal(engine.getSeqOwner(), 'otherPeer');
+  });
+
+  test('exports sync constants accurately', () => {
+    assert.equal(DRIFT_NOOP_MS, 12);
+    assert.equal(DRIFT_SNAP_MS, 250);
+    assert.equal(ECHO_GUARD_MS, 250);
+    assert.equal(RATE_NUDGE_FACTOR, 0.04);
+  });
 });
 
-describe('Sync Engine - 300ms Intent-Scoped Echo Guard', () => {
-  test('blocks echo of same action within 300ms', () => {
+describe('Sync Engine - 250ms Intent-Scoped Echo Guard', () => {
+  test('blocks echo of same action and timestamp within 250ms', () => {
     const engine = createSyncEngine('peerA');
     engine.localIntent('PLAY', { paused: false, time: 10 }, 1000);
 
-    // Remote reflects PLAY at 1100 (delta = 100ms < 300ms)
+    // Remote reflects PLAY at 1100 (delta = 100ms < 250ms, close time)
     const res = engine.resolveRemote({
       type: 'INTENT',
       action: 'PLAY',
@@ -189,7 +216,27 @@ describe('Sync Engine - 300ms Intent-Scoped Echo Guard', () => {
     assert.equal(res.reason, 'echo-guard');
   });
 
-  test('passes opposite human action within 300ms', () => {
+  test('rapid seeks to different timestamp within 250ms are NOT blocked by echo-guard', () => {
+    const engine = createSyncEngine('peerA');
+    // Local user seeked to 10.0s
+    engine.localIntent('SEEK', { paused: false, time: 10.0 }, 1000);
+
+    // Remote user simultaneously seeked to 25.0s (delta = 100ms <= 250ms, but time diff 15s >= 0.45s)
+    const res = engine.resolveRemote({
+      type: 'INTENT',
+      action: 'SEEK',
+      seq: 2,
+      peerId: 'peerB',
+      paused: false,
+      time: 25.0
+    }, { paused: false, time: 10.0 }, 0, 1100);
+
+    assert.notEqual(res.action, 'IGNORE');
+    assert.equal(res.action, 'SNAP');
+    assert.equal(res.targetTime, 25.0);
+  });
+
+  test('passes opposite human action within 250ms', () => {
     const engine = createSyncEngine('peerA');
     // Local user hit PLAY at 1000
     engine.localIntent('PLAY', { paused: false, time: 10 }, 1000);
@@ -228,11 +275,11 @@ describe('Sync Engine - 300ms Intent-Scoped Echo Guard', () => {
     assert.equal(res.targetPaused, false);
   });
 
-  test('allows same action once 300ms window has passed', () => {
+  test('allows same action once 250ms window has passed', () => {
     const engine = createSyncEngine('peerA');
     engine.localIntent('PLAY', { paused: false, time: 10 }, 1000);
 
-    // Remote at 1350 (delta = 350ms > 300ms)
+    // Remote at 1300 (delta = 300ms > 250ms)
     const res = engine.resolveRemote({
       type: 'INTENT',
       action: 'PLAY',
@@ -240,7 +287,7 @@ describe('Sync Engine - 300ms Intent-Scoped Echo Guard', () => {
       peerId: 'peerB',
       paused: false,
       time: 10
-    }, { paused: false, time: 10 }, 0, 1350);
+    }, { paused: false, time: 10 }, 0, 1300);
 
     assert.notEqual(res.action, 'IGNORE');
   });
@@ -262,7 +309,29 @@ describe('Sync Engine - RTT Dead-Reckoning & Drift Correction', () => {
     }, { paused: false, time: 50.1, rate: 1.0 }, 200, 2000);
 
     assert.equal(Math.abs(res.targetTime - 50.1) < 0.001, true);
-    assert.equal(res.action, 'NOOP'); // diff ~0ms < 40ms
+    assert.equal(res.action, 'NOOP'); // diff ~0ms < 12ms
+  });
+
+  test('Cristian transit compensation with clockOffsetMs accounts for one-way flight time', () => {
+    const engine = createSyncEngine('peerA');
+    // now = 2000, clockOffsetMs = -50 (local clock is 50ms behind true clock)
+    // msg.timestamp = 1850.
+    // true local now = 2000 + (-50) = 1950.
+    // transit time = (1950 - 1850) / 1000 = 0.1s.
+    // Remote is playing at rate 1.0 from time 50.0s.
+    // Estimated remote time = 50.0 + 0.1 * 1.0 = 50.1s.
+    const res = engine.resolveRemote({
+      type: 'HEARTBEAT',
+      seq: 1,
+      peerId: 'peerB',
+      paused: false,
+      time: 50.0,
+      rate: 1.0,
+      timestamp: 1850
+    }, { paused: false, time: 50.1, rate: 1.0 }, 400, 2000, -50);
+
+    assert.equal(Math.abs(res.targetTime - 50.1) < 0.001, true);
+    assert.equal(res.action, 'NOOP');
   });
 
   test('no RTT dead-reckoning advance when remote is paused', () => {
@@ -281,15 +350,15 @@ describe('Sync Engine - RTT Dead-Reckoning & Drift Correction', () => {
     assert.equal(res.action, 'NOOP');
   });
 
-  test('drift < 40ms returns NOOP', () => {
+  test('drift < 12ms returns NOOP', () => {
     const engine = createSyncEngine('peerA');
-    // Difference is 20ms (0.02s)
+    // Difference is 10ms (0.010s < 0.012s)
     const res = engine.resolveRemote({
       type: 'HEARTBEAT',
       seq: 1,
       peerId: 'peerB',
       paused: false,
-      time: 10.02,
+      time: 10.010,
       rate: 1.0
     }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
 
@@ -297,10 +366,10 @@ describe('Sync Engine - RTT Dead-Reckoning & Drift Correction', () => {
     assert.equal(res.targetRate, 1.0);
   });
 
-  test('drift 40-400ms returns NUDGE with +-4% rate adjustment', () => {
+  test('drift 12-250ms returns NUDGE with proportional rate adjustment', () => {
     const engine = createSyncEngine('peerA');
 
-    // Case 1: Remote is ahead by 100ms (+0.1s). Local must speed up to +4% (1.04)
+    // Case 1: Remote is ahead by 100ms (+0.1s). raw = 0.1 * 0.5 = +0.05. targetRate = 1.05
     const resAhead = engine.resolveRemote({
       type: 'HEARTBEAT',
       seq: 1,
@@ -311,9 +380,9 @@ describe('Sync Engine - RTT Dead-Reckoning & Drift Correction', () => {
     }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
 
     assert.equal(resAhead.action, 'NUDGE');
-    assert.equal(resAhead.targetRate, 1.04);
+    assert.equal(resAhead.targetRate, 1.05);
 
-    // Case 2: Remote is behind by 200ms (-0.2s). Local must slow down to -4% (0.96)
+    // Case 2: Remote is behind by 200ms (-0.2s). raw = -0.2 * 0.5 = -0.10. targetRate = 0.90
     const resBehind = engine.resolveRemote({
       type: 'HEARTBEAT',
       seq: 2,
@@ -324,13 +393,39 @@ describe('Sync Engine - RTT Dead-Reckoning & Drift Correction', () => {
     }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
 
     assert.equal(resBehind.action, 'NUDGE');
-    assert.equal(resBehind.targetRate, 0.96);
+    assert.equal(resBehind.targetRate, 0.90);
+
+    // Case 3: Small drift 15ms (+0.015s). raw = 0.0075, clamped to min magnitude 0.015 -> 1.015
+    const resSmall = engine.resolveRemote({
+      type: 'HEARTBEAT',
+      seq: 3,
+      peerId: 'peerB',
+      paused: false,
+      time: 10.015,
+      rate: 1.0
+    }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
+
+    assert.equal(resSmall.action, 'NUDGE');
+    assert.equal(resSmall.targetRate, 1.015);
+
+    // Case 4: Near upper boundary 240ms (+0.24s). raw = 0.12, clamped to max magnitude 0.10 -> 1.10
+    const resLarge = engine.resolveRemote({
+      type: 'HEARTBEAT',
+      seq: 4,
+      peerId: 'peerB',
+      paused: false,
+      time: 10.24,
+      rate: 1.0
+    }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
+
+    assert.equal(resLarge.action, 'NUDGE');
+    assert.equal(resLarge.targetRate, 1.10);
   });
 
-  test('drift >= 40ms when paused triggers SNAP instead of NUDGE', () => {
+  test('drift >= 12ms when paused triggers SNAP instead of NUDGE', () => {
     const engine = createSyncEngine('peerA');
 
-    // Remote is paused at 10.1s, local is paused at 10.0s (100ms drift, in 40-400ms range)
+    // Remote is paused at 10.1s, local is paused at 10.0s (100ms drift >= 12ms)
     const res = engine.resolveRemote({
       type: 'HEARTBEAT',
       seq: 1,
@@ -346,32 +441,32 @@ describe('Sync Engine - RTT Dead-Reckoning & Drift Correction', () => {
     assert.equal(res.targetTime, 10.1);
   });
 
-  test('drift > 400ms triggers SNAP', () => {
+  test('drift > 250ms triggers SNAP', () => {
     const engine = createSyncEngine('peerA');
-    // Difference is 500ms (0.5s)
+    // Difference is 300ms (0.3s > 0.25s)
     const res = engine.resolveRemote({
       type: 'HEARTBEAT',
       seq: 1,
       peerId: 'peerB',
       paused: false,
-      time: 10.5,
+      time: 10.3,
       rate: 1.0
     }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
 
     assert.equal(res.action, 'SNAP');
-    assert.equal(res.targetTime, 10.5);
+    assert.equal(res.targetTime, 10.3);
   });
 
-  test('SEEK intent always snaps even when diff < 40ms', () => {
+  test('SEEK intent always snaps even when diff < 12ms', () => {
     const engine = createSyncEngine('peerA');
-    // SEEK message with only 10ms diff
+    // SEEK message with only 5ms diff
     const res = engine.resolveRemote({
       type: 'INTENT',
       action: 'SEEK',
       seq: 1,
       peerId: 'peerB',
       paused: false,
-      time: 10.01,
+      time: 10.005,
       rate: 1.0
     }, { paused: false, time: 10.0, rate: 1.0 }, 0, 2000);
 

@@ -51,9 +51,22 @@
       </div>
     </div>
 
+    <!-- Identity Row (visible across 1A, 1B, 1C) -->
+    <div id="identity-row" class="identity-row">
+      <label for="input-display-name" class="identity-label">YOU</label>
+      <input id="input-display-name" class="identity-input" type="text" maxlength="24" placeholder="Your name…" spellcheck="false" autocomplete="off">
+    </div>
+
     <!-- State 1A: Unpaired (First Run) -->
     <main id="view-unpaired" class="view">
       <div class="view-content">
+        <!-- Kicked Banner (hidden by default) -->
+        <div id="kicked-banner" class="kicked-banner hidden" role="alert">
+          <span class="status-dot dot-amber"></span>
+          <span class="kicked-text">Removed from session by host</span>
+          <button id="btn-dismiss-kicked" class="btn-dismiss-kicked" type="button" aria-label="Dismiss notice">&times;</button>
+        </div>
+
         <p class="value-prop">Sync any web video peer-to-peer.</p>
 
         <button id="btn-unpaired-pick" class="btn btn-primary" type="button">
@@ -99,6 +112,9 @@
           </div>
           <span id="idle-key-value" class="key-readout">lk-7x9q</span>
         </div>
+
+        <!-- Multi-Person Session Roster -->
+        <div id="roster-idle" class="session-roster"></div>
 
         <!-- Action Button Group -->
         <div class="button-row">
@@ -155,6 +171,9 @@
             <span class="warning-text">Muted: click video tab to hear audio</span>
           </div>
         </div>
+
+        <!-- Multi-Person Session Roster -->
+        <div id="roster-sync" class="session-roster"></div>
 
         <!-- Action Button Row -->
         <div class="button-row">

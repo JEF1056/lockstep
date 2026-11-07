@@ -326,6 +326,95 @@ html, body {
 }
 
 /* --------------------------------------------------------------------------
+   Identity Row (Self-Identification Strip)
+   -------------------------------------------------------------------------- */
+.identity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background-color: var(--surface-container);
+  border-bottom: 1px solid var(--outline);
+  height: 28px;
+}
+
+.identity-label {
+  font-family: var(--font-code);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--on-surface-variant);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.identity-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  background-color: var(--surface-lowest);
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--on-surface);
+  outline: none;
+  transition: border-color var(--duration-state) var(--ease-state),
+              box-shadow var(--duration-state) var(--ease-state);
+}
+
+.identity-input::placeholder {
+  color: rgba(161, 161, 170, 0.4);
+}
+
+.identity-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+/* --------------------------------------------------------------------------
+   Kicked Banner (Subtle Danger/Amber Styling)
+   -------------------------------------------------------------------------- */
+.kicked-banner {
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warning);
+}
+
+.kicked-text {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 13px;
+  flex: 1;
+}
+
+.btn-dismiss-kicked {
+  background: none;
+  border: none;
+  color: var(--on-surface-variant);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--duration-state) var(--ease-state);
+}
+
+.btn-dismiss-kicked:hover {
+  color: var(--on-surface);
+}
+
+/* --------------------------------------------------------------------------
    Main Content Views
    -------------------------------------------------------------------------- */
 .view {
@@ -334,10 +423,10 @@ html, body {
 }
 
 .view-content {
-  padding: 12px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .value-prop {
@@ -450,6 +539,120 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+   Session Roster (Multi-Person Roster & Kick Controls)
+   -------------------------------------------------------------------------- */
+.session-roster {
+  background-color: var(--surface-container);
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-sm);
+  max-height: 76px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 5px 8px;
+  gap: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--outline) transparent;
+}
+
+.session-roster::-webkit-scrollbar {
+  width: 4px;
+}
+
+.session-roster::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.session-roster::-webkit-scrollbar-thumb {
+  background-color: var(--outline);
+  border-radius: 2px;
+}
+
+.roster-header {
+  font-family: var(--font-code);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--on-surface-variant);
+  text-transform: uppercase;
+  padding-bottom: 3px;
+  border-bottom: 1px solid rgba(39, 39, 46, 0.6);
+  margin-bottom: 1px;
+}
+
+.roster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.roster-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 18px;
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.roster-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--on-surface);
+  font-weight: 500;
+}
+
+.roster-latency {
+  font-family: var(--font-code);
+  font-size: 9px;
+  color: var(--on-surface-variant);
+  flex-shrink: 0;
+}
+
+.badge-host {
+  font-family: var(--font-code);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+  background-color: rgba(0, 229, 255, 0.12);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  border-radius: 2px;
+  padding: 0 3px;
+  line-height: 12px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.btn-kick-peer {
+  background-color: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: var(--danger);
+  border-radius: 2px;
+  font-family: var(--font-code);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 4px;
+  height: 16px;
+  line-height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color var(--duration-state) var(--ease-state),
+              border-color var(--duration-state) var(--ease-state);
+}
+
+.btn-kick-peer:hover {
+  background-color: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
 }
 
 /* --------------------------------------------------------------------------

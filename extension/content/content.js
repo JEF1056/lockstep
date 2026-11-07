@@ -13,6 +13,12 @@
   let currentSyncVideo = null;
   let heartbeatInterval = null;
   let isApplyingRemote = false;
+  let remoteGuardUntil = 0;
+  let followerBootLock = false;
+  let followerBootTimer = null;
+  let isBuffering = false;
+  let burstInterval = null;
+  let burstTicks = 0;
   let isPickerActive = false;
   let pickerHost = null;
   let pickerShadow = null;
@@ -640,11 +646,7 @@
     let frameOrigin = window.location.origin;
 
     if (video) {
-      state = {
-        paused: Boolean(video.paused),
-        time: Number(video.currentTime) || 0,
-        rate: Number(video.playbackRate) || 1
-      };
+      state = getVideoState(video);
       duration = Number(video.duration) || 0;
       const rect = video.getBoundingClientRect();
       area = (rect.width || video.videoWidth || 0) * (rect.height || video.videoHeight || 0);
@@ -818,14 +820,24 @@
   }
 
   function getVideoState(video = currentSyncVideo) {
-    if (!video) return { paused: true, time: 0, rate: 1 };
+    if (!video) {
+      return {
+        paused: true,
+        time: 0,
+        rate: 1,
+        seq: syncEngine?.getSeq?.() || 1,
+        seqOwner: syncEngine?.getSeqOwner?.() || currentEngineSelfId || ''
+      };
+    }
     const rate = (video === currentSyncVideo && isNudging)
       ? baseRate
       : (Number(video.playbackRate) || 1);
     return {
       paused: Boolean(video.paused),
       time: Number(video.currentTime) || 0,
-      rate
+      rate,
+      seq: syncEngine?.getSeq?.() || 1,
+      seqOwner: syncEngine?.getSeqOwner?.() || currentEngineSelfId || ''
     };
   }
 
@@ -885,8 +897,41 @@
     }
   }
 
+  function onTrustedUserInteraction(e) {
+    if (e && e.isTrusted === false) return;
+    remoteGuardUntil = 0;
+    isApplyingRemote = false;
+    if (followerBootLock) {
+      followerBootLock = false;
+      if (followerBootTimer) {
+        clearTimeout(followerBootTimer);
+        followerBootTimer = null;
+      }
+    }
+  }
+
+  function triggerFastBurst(engine) {
+    if (burstInterval) {
+      clearInterval(burstInterval);
+      burstInterval = null;
+    }
+    burstTicks = 0;
+    burstInterval = setInterval(() => {
+      burstTicks += 1;
+      if (burstTicks > 6 || !currentSyncVideo || !engine) {
+        clearInterval(burstInterval);
+        burstInterval = null;
+        return;
+      }
+      if (!isBuffering && !followerBootLock && Date.now() >= remoteGuardUntil) {
+        const msg = engine.localHeartbeat(getVideoState(), Date.now());
+        sendLocalSyncMsg(msg);
+      }
+    }, 300);
+  }
+
   function sendLocalSyncMsg(msg) {
-    if (!msg) return;
+    if (!msg || followerBootLock) return;
     chrome.runtime.sendMessage({
       target: 'sw',
       ...msg,
@@ -896,7 +941,63 @@
     }).catch(() => {});
   }
 
-  async function attachSync(selfId, initialState = null) {
+  async function applyInitialState(video, initState, rttMs = 0, clockOffsetMs = null) {
+    if (!video || !initState || typeof initState !== 'object') return;
+    const t0 = Date.now();
+
+    const doApply = async (useElapsed = false) => {
+      remoteGuardUntil = Date.now() + 380;
+      isApplyingRemote = true;
+
+      let transitSec;
+      if (typeof clockOffsetMs === 'number' && Number.isFinite(clockOffsetMs) && initState.timestamp > 0) {
+        transitSec = Math.max(0, Math.min(2.0, ((Date.now() + clockOffsetMs) - Number(initState.timestamp)) / 1000));
+      } else {
+        transitSec = (Math.max(0, Number(rttMs) || 0) / 2) / 1000;
+      }
+      const elapsed = useElapsed ? (Date.now() - t0) / 1000 : 0;
+      const rate = (typeof initState.rate === 'number' && initState.rate > 0) ? initState.rate : 1;
+      const targetTime = Number(initState.time || 0) + (initState.paused ? 0 : (elapsed + transitSec) * rate);
+
+      try {
+        baseRate = rate;
+        video.playbackRate = rate;
+        video.currentTime = targetTime;
+        sendMainCommand('seek', { time: targetTime });
+
+        if (initState.paused === false) {
+          await safePlay(video);
+          sendMainCommand('play');
+        } else if (initState.paused === true) {
+          video.pause();
+          sendMainCommand('pause');
+        }
+      } catch {}
+
+      remoteGuardUntil = Date.now() + 380;
+      setTimeout(() => {
+        isApplyingRemote = false;
+      }, 50);
+
+      if (followerBootTimer) {
+        clearTimeout(followerBootTimer);
+      }
+      followerBootTimer = setTimeout(() => {
+        followerBootLock = false;
+        followerBootTimer = null;
+      }, 450);
+    };
+
+    if (video.readyState < 1) {
+      video.addEventListener('loadedmetadata', () => {
+        doApply(true);
+      }, { once: true });
+    } else {
+      await doApply(false);
+    }
+  }
+
+  async function attachSync(selfId, initialState = null, options = {}) {
     detachSync();
 
     currentSyncVideo = getBestVideo();
@@ -904,73 +1005,94 @@
       return { ok: false, error: 'no_video' };
     }
 
-    triggerFacadePlayIfUnstarted(currentSyncVideo);
-
     const engine = await getSyncEngine(selfId);
 
-    if (initialState && typeof initialState === 'object') {
-      isApplyingRemote = true;
-      try {
-        if (typeof initialState.time === 'number') {
-          currentSyncVideo.currentTime = initialState.time;
-          sendMainCommand('seek', { time: initialState.time });
-        }
-        if (typeof initialState.rate === 'number' && initialState.rate > 0) {
-          baseRate = initialState.rate;
-          currentSyncVideo.playbackRate = initialState.rate;
-        }
-        if (initialState.paused === false) {
-          await safePlay(currentSyncVideo);
-          sendMainCommand('play');
-        } else if (initialState.paused === true) {
-          currentSyncVideo.pause();
-          sendMainCommand('pause');
-        }
-      } catch {}
-      setTimeout(() => {
-        isApplyingRemote = false;
-      }, 50);
+    const isHost = options.isHost !== undefined ? Boolean(options.isHost) : !initialState;
+
+    if (isHost) {
+      engine?.seed?.(Math.max(engine?.getSeq?.() || 0, 1), selfId);
+      followerBootLock = false;
+      triggerFacadePlayIfUnstarted(currentSyncVideo);
+    } else {
+      if (initialState?.seq) {
+        engine?.seed?.(initialState.seq, initialState.seqOwner || '');
+      }
+      followerBootLock = true;
+      if (initialState && typeof initialState === 'object') {
+        await applyInitialState(currentSyncVideo, initialState, options.rttMs, options.clockOffsetMs);
+      }
     }
 
     const onPlay = () => {
-      if (isApplyingRemote) return;
+      isBuffering = false;
+      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
       const msg = engine?.localIntent('PLAY', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
+      triggerFastBurst(engine);
     };
 
     const onPause = () => {
-      if (isApplyingRemote) return;
+      isBuffering = false;
+      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
       const msg = engine?.localIntent('PAUSE', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
     };
 
     const onSeeking = () => {
-      if (isApplyingRemote) return;
+      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
       const msg = engine?.localIntent('SEEK', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
     };
 
+    const onSeeked = () => {
+      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
+      triggerFastBurst(engine);
+    };
+
     const onRateChange = () => {
-      if (isApplyingRemote || isNudging) return;
+      if (Date.now() < remoteGuardUntil || isApplyingRemote || isNudging || followerBootLock) return;
       baseRate = Number(currentSyncVideo.playbackRate) || 1;
       const msg = engine?.localIntent('RATE', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
     };
 
+    const onWaiting = () => {
+      isBuffering = true;
+    };
+
+    const onPlaying = () => {
+      isBuffering = false;
+    };
+
     currentSyncVideo.addEventListener('play', onPlay);
     currentSyncVideo.addEventListener('pause', onPause);
     currentSyncVideo.addEventListener('seeking', onSeeking);
+    currentSyncVideo.addEventListener('seeked', onSeeked);
     currentSyncVideo.addEventListener('ratechange', onRateChange);
+    currentSyncVideo.addEventListener('waiting', onWaiting);
+    currentSyncVideo.addEventListener('playing', onPlaying);
 
-    videoListeners = { onPlay, onPause, onSeeking, onRateChange, video: currentSyncVideo };
+    window.addEventListener('pointerdown', onTrustedUserInteraction, true);
+    window.addEventListener('keydown', onTrustedUserInteraction, true);
 
-    // 2s periodic heartbeat
+    videoListeners = {
+      onPlay,
+      onPause,
+      onSeeking,
+      onSeeked,
+      onRateChange,
+      onWaiting,
+      onPlaying,
+      video: currentSyncVideo
+    };
+
+    // 1000ms periodic heartbeat
     heartbeatInterval = setInterval(() => {
-      if (currentSyncVideo && engine) {
+      if (currentSyncVideo && engine && !isBuffering && !followerBootLock) {
         const msg = engine.localHeartbeat(getVideoState(), Date.now());
         sendLocalSyncMsg(msg);
       }
-    }, 2000);
+    }, 1000);
 
     return { ok: true, state: getVideoState(), duration: currentSyncVideo.duration || 0 };
   }
@@ -980,15 +1102,31 @@
       clearInterval(heartbeatInterval);
       heartbeatInterval = null;
     }
+    if (burstInterval) {
+      clearInterval(burstInterval);
+      burstInterval = null;
+    }
+    if (followerBootTimer) {
+      clearTimeout(followerBootTimer);
+      followerBootTimer = null;
+    }
 
     if (videoListeners && videoListeners.video) {
       const v = videoListeners.video;
       v.removeEventListener('play', videoListeners.onPlay);
       v.removeEventListener('pause', videoListeners.onPause);
       v.removeEventListener('seeking', videoListeners.onSeeking);
+      v.removeEventListener('seeked', videoListeners.onSeeked);
       v.removeEventListener('ratechange', videoListeners.onRateChange);
+      v.removeEventListener('waiting', videoListeners.onWaiting);
+      v.removeEventListener('playing', videoListeners.onPlaying);
       videoListeners = null;
     }
+
+    try {
+      window.removeEventListener('pointerdown', onTrustedUserInteraction, true);
+      window.removeEventListener('keydown', onTrustedUserInteraction, true);
+    } catch {}
 
     if (syncEngine && typeof syncEngine.reset === 'function') {
       syncEngine.reset();
@@ -996,6 +1134,9 @@
 
     currentSyncVideo = null;
     isApplyingRemote = false;
+    remoteGuardUntil = 0;
+    followerBootLock = false;
+    isBuffering = false;
     baseRate = 1;
     isNudging = false;
     return { ok: true };
@@ -1016,8 +1157,9 @@
 
     const rawMsg = message.msg || message.payload || message;
     const rttMs = Number(message.rttMs) || 0;
+    const clockOffsetMs = (typeof message.clockOffsetMs === 'number') ? message.clockOffsetMs : null;
 
-    const resolution = engine.resolveRemote(rawMsg, getVideoState(), rttMs, Date.now());
+    const resolution = engine.resolveRemote(rawMsg, getVideoState(), rttMs, Date.now(), clockOffsetMs);
     if (!resolution || resolution.action === 'IGNORE') {
       return { ok: true, action: 'IGNORE' };
     }
@@ -1027,6 +1169,7 @@
     }
 
     isApplyingRemote = true;
+    remoteGuardUntil = Date.now() + 380;
     try {
       if (resolution.pausedChanged) {
         if (resolution.targetPaused) {
@@ -1059,6 +1202,7 @@
         sendMainCommand(resolution.targetPaused ? 'pause' : 'play');
       }
     } finally {
+      remoteGuardUntil = Date.now() + 380;
       setTimeout(() => {
         isApplyingRemote = false;
       }, 50);
@@ -1104,7 +1248,34 @@
     }
 
     if (type === 'ATTACH_SYNC') {
-      attachSync(message.selfId || message.peerId, message.initialState).then(sendResponse);
+      attachSync(message.selfId || message.peerId, message.initialState, {
+        isHost: message.isHost,
+        rttMs: message.rttMs,
+        clockOffsetMs: message.clockOffsetMs
+      }).then(sendResponse);
+      return true; // async
+    }
+
+    if (type === 'APPLY_INITIAL_STATE') {
+      (async () => {
+        const video = currentSyncVideo || getBestVideo();
+        const engine = await getSyncEngine();
+        const initState = message.state || message.initialState;
+        if (initState && engine) {
+          if (initState.seq) {
+            engine.seed(initState.seq, initState.seqOwner || '');
+          }
+        }
+        if (video && initState) {
+          await applyInitialState(video, initState, message.rttMs, message.clockOffsetMs);
+        }
+        if (followerBootTimer) clearTimeout(followerBootTimer);
+        followerBootTimer = setTimeout(() => {
+          followerBootLock = false;
+          followerBootTimer = null;
+        }, 450);
+        sendResponse({ ok: true });
+      })();
       return true; // async
     }
 
@@ -1177,6 +1348,10 @@
     try { stopPicker(); } catch {}
     try { detachSync(); } catch {}
     try { videoObserver?.disconnect(); } catch {}
+    try {
+      window.removeEventListener('pointerdown', onTrustedUserInteraction, true);
+      window.removeEventListener('keydown', onTrustedUserInteraction, true);
+    } catch {}
     try {
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.removeListener && messageListener) {
         chrome.runtime.onMessage.removeListener(messageListener);

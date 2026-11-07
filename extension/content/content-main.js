@@ -58,6 +58,60 @@
       if (action === 'suppressPopups' || detail.suppressPopups) {
         suppressPopups(detail.duration || 500);
         result = { suppressed: true };
+      } else if (action === 'activatePlayer') {
+        suppressPopups(detail.duration || 1000);
+        let activated = false;
+
+        // Netflix Cadmium
+        try {
+          const cp = getCadmiumPlayer();
+          if (cp) {
+            const isPaused = typeof cp.isPaused === 'function' ? cp.isPaused() : Boolean(cp.paused);
+            if (isPaused && typeof cp.play === 'function') {
+              cp.play();
+              activated = true;
+            }
+          }
+        } catch {}
+
+        // window.jwplayer?.()
+        try {
+          if (typeof window.jwplayer === 'function') {
+            const jw = window.jwplayer();
+            if (jw && typeof jw.getState === 'function') {
+              const state = jw.getState();
+              if (state !== 'playing' && state !== 'buffering' && typeof jw.play === 'function') {
+                jw.play(true);
+                activated = true;
+              }
+            }
+          }
+        } catch {}
+
+        // window.videojs?.players / getPlayers?.()
+        try {
+          const vjsPlayers = (typeof window.videojs?.getPlayers === 'function'
+            ? window.videojs.getPlayers()
+            : window.videojs?.players) || {};
+          const playersList = Array.isArray(vjsPlayers) ? vjsPlayers : Object.values(vjsPlayers);
+          for (const p of playersList) {
+            if (p && typeof p.paused === 'function' && p.paused() && typeof p.play === 'function') {
+              p.play();
+              activated = true;
+            }
+          }
+        } catch {}
+
+        // window.player || window.art || window.dp
+        try {
+          const generic = window.player || window.art || window.dp;
+          if (generic && generic.playing !== true && generic.paused !== false && typeof generic.play === 'function') {
+            generic.play();
+            activated = true;
+          }
+        } catch {}
+
+        result = { suppressed: true, activated };
       } else if (action === 'play' || action === 'netflix_play') {
         const p = getCadmiumPlayer();
         if (p && typeof p.play === 'function') {

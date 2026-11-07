@@ -10,6 +10,7 @@ import { compareVersions } from '../shared/version.js';
 
 let offscreenCreating = null;
 let armedPickerTabId = null;
+let lastIntentScanTime = 0;
 
 /**
  * Cancel standby video picker on target tab across frames.
@@ -292,6 +293,27 @@ async function checkForUpdates() {
 }
 
 /**
+ * Retries video scanning with autoStart for lazy facade players or embedded iframes.
+ */
+function scheduleScanRetries(tabId) {
+  const delays = [900, 2200];
+  for (const delay of delays) {
+    setTimeout(async () => {
+      try {
+        const session = await getSessionState();
+        if (session.activeSession?.tabId === tabId && session.activeSession?.frameId === null) {
+          await ensureContentScripts(tabId);
+          chrome.tabs.sendMessage(
+            tabId,
+            { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }
+          ).catch(() => {});
+        }
+      } catch {}
+    }, delay);
+  }
+}
+
+/**
  * Auto-harvest #pair invite tabs.
  */
 async function harvestInviteUrl(tabId, url) {
@@ -367,8 +389,9 @@ async function harvestInviteUrl(tabId, url) {
         }
         chrome.tabs.sendMessage(
           targetTabId,
-          { target: 'content', type: 'SCAN_VIDEOS' }
+          { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }
         ).catch(() => {});
+        scheduleScanRetries(targetTabId);
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
@@ -384,8 +407,9 @@ async function harvestInviteUrl(tabId, url) {
       }
       chrome.tabs.sendMessage(
         targetTabId,
-        { target: 'content', type: 'SCAN_VIDEOS' }
+        { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }
       ).catch(() => {});
+      scheduleScanRetries(targetTabId);
     }
   } else {
     // If an invite tab has #pair without #url, update hash to #paired=1
@@ -676,8 +700,9 @@ async function handleOffscreenMessage(message, sendResponse) {
         }
         chrome.tabs.sendMessage(
           tId,
-          { target: 'content', type: 'SCAN_VIDEOS' }
+          { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }
         ).catch(() => {});
+        scheduleScanRetries(tId);
         const sState = await getSessionState();
         chrome.tabs.sendMessage(
           tId,
@@ -724,6 +749,17 @@ async function handleOffscreenMessage(message, sendResponse) {
           },
           typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
         ).catch(() => {});
+
+        // If unanchored follower receives active playback, record initial state and nudge video scan/activation
+        if (typeof session.activeSession.frameId !== 'number' && payload?.paused === false) {
+          session.activeSession.initialState = payload;
+          await setSessionState({ activeSession: session.activeSession });
+          const now = Date.now();
+          if (now - lastIntentScanTime >= 1200) {
+            lastIntentScanTime = now;
+            chrome.tabs.sendMessage(session.activeSession.tabId, { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }).catch(() => {});
+          }
+        }
       }
       sendResponse({ ok: true });
       return;

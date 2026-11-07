@@ -224,6 +224,78 @@ describe('content-main.js - Popup Suppression & Cadmium Control', () => {
     assert.ok(errAck.detail.error.includes('Cadmium'));
   });
 
+  test('activatePlayer suppresses popups and activates paused jwplayer or videojs without re-triggering playing players', async () => {
+    // 1. Test with paused jwplayer
+    let jwPlayCalled = false;
+    let jwState = 'paused';
+    sandbox.window.jwplayer = () => ({
+      getState: () => jwState,
+      play: (state) => { jwPlayCalled = true; }
+    });
+
+    const origOpen = sandbox.window.open;
+    sandbox.window.dispatchEvent(
+      new CustomEvent('__lockstep_main', {
+        detail: { action: 'activatePlayer', duration: 100, requestId: 'act-1' }
+      })
+    );
+
+    assert.equal(jwPlayCalled, true, 'paused jwplayer should be told to play');
+    assert.notEqual(sandbox.window.open, origOpen, 'popups should be suppressed');
+    let ack = dispatchedEvents.find(e => e.type === '__lockstep_main_ack' && e.detail?.requestId === 'act-1');
+    assert.ok(ack);
+    assert.equal(ack.detail.result.suppressed, true);
+    assert.equal(ack.detail.result.activated, true);
+
+    // 2. Test when jwplayer is already playing -> must NOT re-call play
+    jwPlayCalled = false;
+    jwState = 'playing';
+    sandbox.window.dispatchEvent(
+      new CustomEvent('__lockstep_main', {
+        detail: { action: 'activatePlayer', duration: 100, requestId: 'act-2' }
+      })
+    );
+    assert.equal(jwPlayCalled, false, 'already playing jwplayer should not receive play()');
+    ack = dispatchedEvents.find(e => e.type === '__lockstep_main_ack' && e.detail?.requestId === 'act-2');
+    assert.ok(ack);
+    assert.equal(ack.detail.result.activated, false);
+
+    // 3. Test videojs fallback
+    delete sandbox.window.jwplayer;
+    let vjsPlayCalled = false;
+    let vjsPaused = true;
+    sandbox.window.videojs = {
+      players: {
+        'player-1': {
+          paused: () => vjsPaused,
+          play: () => { vjsPlayCalled = true; }
+        }
+      }
+    };
+    sandbox.window.dispatchEvent(
+      new CustomEvent('__lockstep_main', {
+        detail: { action: 'activatePlayer', duration: 100, requestId: 'act-3' }
+      })
+    );
+    assert.equal(vjsPlayCalled, true, 'paused videojs player should be activated');
+    ack = dispatchedEvents.find(e => e.type === '__lockstep_main_ack' && e.detail?.requestId === 'act-3');
+    assert.ok(ack);
+    assert.equal(ack.detail.result.activated, true);
+
+    // When videojs already playing
+    vjsPlayCalled = false;
+    vjsPaused = false;
+    sandbox.window.dispatchEvent(
+      new CustomEvent('__lockstep_main', {
+        detail: { action: 'activatePlayer', duration: 100, requestId: 'act-4' }
+      })
+    );
+    assert.equal(vjsPlayCalled, false, 'playing videojs player should not receive play()');
+    ack = dispatchedEvents.find(e => e.type === '__lockstep_main_ack' && e.detail?.requestId === 'act-4');
+    assert.ok(ack);
+    assert.equal(ack.detail.result.activated, false);
+  });
+
   test('idempotency guard prevents duplicate initialization in content-main.js', () => {
     assert.equal(sandbox.window.__lockstepMainLoaded, true);
     const code = fs.readFileSync(CONTENT_MAIN_PATH, 'utf-8');
@@ -1370,5 +1442,205 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     assert.ok(userPause, 'After unlock, user actions should emit LOCAL_SYNC_MSG');
     assert.equal(userPause.msg.action, 'PAUSE');
     assert.equal(userPause.msg.peerId, 'follower-1');
+  });
+
+  test('SCAN_VIDEOS with autoStart: true clicks lazy facade play button when no video exists and mounts video cleanly', async () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    class MockMouseEvent {
+      constructor(type, opts) {
+        this.type = type;
+        this.bubbles = opts?.bubbles ?? true;
+        this.cancelable = opts?.cancelable ?? true;
+      }
+    }
+    mockWindow.PointerEvent = MockMouseEvent;
+    mockWindow.MouseEvent = MockMouseEvent;
+
+    let mountedVideo = null;
+    let buttonClicked = false;
+    const syntheticEvents = [];
+
+    const mockPlayButton = {
+      tagName: 'BUTTON',
+      nodeType: 1,
+      className: 'vjs-big-play-button',
+      getAttribute: (name) => {
+        if (name === 'class') return 'vjs-big-play-button';
+        if (name === 'aria-label') return 'Play Video';
+        return null;
+      },
+      getBoundingClientRect: () => ({ left: 100, top: 100, right: 200, bottom: 200, width: 100, height: 100 }),
+      dispatchEvent: (evt) => {
+        syntheticEvents.push(evt.type);
+        return true;
+      },
+      click: () => {
+        buttonClicked = true;
+        mountedVideo = mockVideo;
+      }
+    };
+
+    mockDoc.querySelectorAll = (sel) => {
+      if (sel === 'video') return mountedVideo ? [mountedVideo] : [];
+      if (sel.includes('vjs-big-play-button') || sel.includes('play-button')) {
+        return mountedVideo ? [] : [mockPlayButton];
+      }
+      return [];
+    };
+    mockDoc.querySelector = (sel) => {
+      if (sel === 'video') return mountedVideo;
+      if (sel.includes('vjs-big-play-button')) return mountedVideo ? null : mockPlayButton;
+      return null;
+    };
+    mockDoc.elementsFromPoint = () => (mountedVideo ? [mockVideo] : [mockPlayButton]);
+
+    sentMessages = [];
+    let scanRes;
+    await new Promise(r => {
+      onMessage({ type: 'SCAN_VIDEOS', autoStart: true }, {}, (res) => {
+        scanRes = res;
+        r();
+      });
+    });
+
+    assert.equal(buttonClicked, true, 'Lazy facade button should be clicked');
+    assert.deepEqual(syntheticEvents, ['pointerdown', 'mousedown', 'pointerup', 'mouseup']);
+    assert.ok(scanRes, 'SCAN_VIDEOS response received');
+    assert.equal(scanRes.ok, true);
+    assert.equal(scanRes.found, true);
+    assert.equal(mountedVideo, mockVideo);
+
+    const readyMsg = sentMessages.find(m => m.type === 'VIDEO_READY');
+    assert.ok(readyMsg, 'VIDEO_READY should be dispatched to SW after video is mounted');
+  });
+
+  test('follower ATTACH_SYNC and APPLY_INITIAL_STATE on unstarted readyState 0 video auto-activates, calls play, and snaps to time on loadedmetadata without emitting 0:00 LOCAL_SYNC_MSG', async () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    mockVideo.readyState = 0;
+    mockVideo.currentTime = 0;
+    mockVideo.paused = true;
+    mockVideo.currentSrc = 'https://stream.example.com/hls.m3u8';
+    mockVideo.preload = 'none';
+    let loadCalled = false;
+    mockVideo.load = () => { loadCalled = true; };
+
+    sentMessages = [];
+
+    // Follower joins room
+    await new Promise(r => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'follower-node',
+        isHost: false,
+        initialState: {
+          time: 55.5,
+          paused: false,
+          rate: 1.0,
+          seq: 10,
+          seqOwner: 'leader'
+        }
+      }, {}, r);
+    });
+
+    // APPLY_INITIAL_STATE arrives for unstarted video
+    let applyRes;
+    await new Promise(r => {
+      onMessage({
+        type: 'APPLY_INITIAL_STATE',
+        state: {
+          time: 55.5,
+          paused: false,
+          rate: 1.0,
+          seq: 10,
+          seqOwner: 'leader'
+        },
+        rttMs: 40,
+        clockOffsetMs: 0
+      }, {}, (res) => {
+        applyRes = res;
+        r();
+      });
+    });
+
+    assert.equal(applyRes.ok, true);
+    assert.equal(loadCalled, true, 'video.load() should be called for readyState 0 preload:none');
+    assert.equal(mockVideo.paused, false, 'safePlay should initiate playback for paused: false stream');
+
+    // Simulate pre-metadata playback events at 0:00
+    mockVideo.currentTime = 0;
+    for (const f of (mockVideo._listeners['play'] || [])) f();
+    for (const f of (mockVideo._listeners['timeupdate'] || [])) f();
+    for (const f of (mockVideo._listeners['seeking'] || [])) f();
+    for (const f of (mockVideo._listeners['seeked'] || [])) f();
+
+    // Verify ZERO LOCAL_SYNC_MSG emitted
+    let syncMsgs = sentMessages.filter(m => m.type === 'LOCAL_SYNC_MSG');
+    assert.equal(syncMsgs.length, 0, 'Must emit ZERO LOCAL_SYNC_MSG while video is unstarted / before metadata settles');
+
+    // loadedmetadata fires once stream metadata arrives
+    mockVideo.readyState = 1;
+    const metaListeners = [...(mockVideo._listeners['loadedmetadata'] || [])];
+    for (const f of metaListeners) f();
+
+    // Verify currentTime snapped to leader position
+    assert.ok(Math.abs(mockVideo.currentTime - 55.52) < 0.05, `Snapped to initial time (~55.52s), got ${mockVideo.currentTime}`);
+
+    // Verify still ZERO LOCAL_SYNC_MSG emitted
+    syncMsgs = sentMessages.filter(m => m.type === 'LOCAL_SYNC_MSG');
+    assert.equal(syncMsgs.length, 0, 'No zero-time LOCAL_SYNC_MSG emitted after metadata settles');
+  });
+
+  test('already-playing video never receives facade clicks', async () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    mockVideo.paused = false;
+    mockVideo.currentTime = 25.0;
+    mockVideo.readyState = 4;
+
+    let facadeClicked = false;
+    const mockFacadeBtn = {
+      tagName: 'BUTTON',
+      nodeType: 1,
+      className: 'vjs-big-play-button',
+      getAttribute: (attr) => (attr === 'class' ? 'vjs-big-play-button' : null),
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 64, height: 64 }),
+      click: () => { facadeClicked = true; }
+    };
+
+    mockDoc.querySelectorAll = (sel) => {
+      if (sel === 'video') return [mockVideo];
+      if (sel.includes('vjs-big-play-button')) return [mockFacadeBtn];
+      return [mockVideo];
+    };
+    mockDoc.querySelector = (sel) => {
+      if (sel === 'video') return mockVideo;
+      if (sel.includes('vjs-big-play-button')) return mockFacadeBtn;
+      return null;
+    };
+
+    // Trigger SCAN_VIDEOS with autoStart: true
+    await new Promise(r => {
+      onMessage({ type: 'SCAN_VIDEOS', autoStart: true }, {}, r);
+    });
+
+    // Trigger REMOTE_SYNC with play action
+    await new Promise(r => {
+      onMessage({
+        type: 'REMOTE_SYNC',
+        msg: {
+          type: 'INTENT',
+          action: 'PLAY',
+          paused: false,
+          time: 26.0,
+          seq: 15,
+          timestamp: Date.now()
+        },
+        rttMs: 20
+      }, {}, r);
+    });
+
+    assert.equal(facadeClicked, false, 'Already playing video must never receive facade clicks');
   });
 });

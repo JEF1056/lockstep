@@ -1,5 +1,20 @@
 import { joinRoom, selfId } from '../vendor/trystero-nostr.min.js';
 
+export const RELAY_URLS = [
+  'wss://nos.lol',
+  'wss://relay.primal.net',
+  'wss://nostr.mom',
+  'wss://relay.snort.social',
+  'wss://nostr.oxtr.dev',
+  'wss://nostr.data.haus'
+];
+
+let joinRoomFn = joinRoom;
+
+export function _setJoinRoomForTesting(fn) {
+  joinRoomFn = fn || joinRoom;
+}
+
 let room = null;
 let currentPairKey = null;
 let pingInterval = null;
@@ -41,19 +56,30 @@ function leaveCurrentRoom() {
 }
 
 function handleJoinRoom(pairKey, roomId) {
-  if (!pairKey) return;
-  const targetRoomId = roomId || pairKey;
-  if (room && currentPairKey === pairKey) {
+  const normalizedKey = String(pairKey || '').trim().toLowerCase();
+  if (!normalizedKey) {
+    return { ok: false, error: 'Missing pairKey' };
+  }
+  const targetRoomId = String(roomId || normalizedKey).trim().toLowerCase();
+
+  if (room && currentPairKey === normalizedKey) {
+    const peers = typeof room.getPeers === 'function' ? Object.keys(room.getPeers() || {}) : [];
+    peerOnline = peers.length > 0;
+    if (peerOnline && currentRtt === null) {
+      const now = Date.now();
+      if (sendPingAction) sendPingAction({ pingTime: now });
+      if (sendSyncAction) sendSyncAction({ __lockstep_ping: true, pingTime: now });
+    }
     notifyPeerStatus(peerOnline, currentRtt);
-    return;
+    return { ok: true, selfId, peerOnline, rttMs: currentRtt };
   }
 
   leaveCurrentRoom();
-  currentPairKey = pairKey;
+  currentPairKey = normalizedKey;
 
   try {
-    room = joinRoom(
-      { appId: 'lockstep-v1', password: pairKey },
+    room = joinRoomFn(
+      { appId: 'lockstep-v1', password: normalizedKey, relayUrls: RELAY_URLS },
       targetRoomId
     );
 
@@ -109,7 +135,7 @@ function handleJoinRoom(pairKey, roomId) {
     });
 
     room.onPeerLeave(() => {
-      const peers = typeof room?.getPeers === 'function' ? Object.keys(room.getPeers()) : [];
+      const peers = typeof room?.getPeers === 'function' ? Object.keys(room.getPeers() || {}) : [];
       peerOnline = peers.length > 0;
       if (!peerOnline) {
         currentRtt = null;
@@ -125,11 +151,14 @@ function handleJoinRoom(pairKey, roomId) {
         if (sendSyncAction) sendSyncAction({ __lockstep_ping: true, pingTime: now });
       }
     }, 2000);
+    pingInterval?.unref?.();
 
     notifyPeerStatus(false, null);
+    return { ok: true, selfId, peerOnline: false, rttMs: null };
   } catch (err) {
     console.error('[Lockstep Offscreen] Failed to join room:', err);
     leaveCurrentRoom();
+    return { ok: false, error: err.message };
   }
 }
 
@@ -143,8 +172,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (type === 'JOIN_ROOM') {
     const pairKey = message.pairKey || message.payload?.pairKey;
     const roomId = message.roomId || message.payload?.roomId;
-    handleJoinRoom(pairKey, roomId);
-    sendResponse({ ok: true, selfId, peerOnline, rttMs: currentRtt });
+    const res = handleJoinRoom(pairKey, roomId);
+    sendResponse(res || { ok: true, selfId, peerOnline, rttMs: currentRtt });
     return false;
   }
 
@@ -171,3 +200,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return false;
 });
+
+// Boot ping so SW immediately joins pairKey if createDocument resolved before module load finished
+chrome.runtime.sendMessage({
+  target: 'sw',
+  from: 'offscreen',
+  type: 'OFFSCREEN_READY',
+  selfId
+}).catch(() => {});
+
+export {
+  handleJoinRoom,
+  leaveCurrentRoom,
+  notifyPeerStatus
+};

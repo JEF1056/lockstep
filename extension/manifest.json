@@ -3,12 +3,14 @@
   "name": "Lockstep",
   "version": "1.0.0",
   "description": "Zero-config peer-to-peer video synchronization via WebRTC and Nostr",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw7dEk/NJ8KmlmL5zT+uHyeUcgESiVjEFycobwxd3yjFuv3NwtDpAYYWSr7F8EYLa+uyUsx1NI1CLZdzV+swi/gczeh51jltd9kHanfodDHzXrZUXBoMKJxyy1C2FXCK6ZO6C22U6qIXt6Mh4GYKPEhOGdUmxNran5fh/rnrAH0+H7CFY8mZYcxubUPv1mBzAomhNnoHDVJSmyuOl+vFjy0a7F4gG08ZJ5dmJgg9oQYFGPAGJDmzHemsC2UzKy83L9zUy/MwCNRCtEyZEZUHTKL0nrL2apEScAoGbT+F0xFRuCraU2p4Mxl7VJq2EF0n2v9ybuVmu/Fh4raoSNnf+FQIDAQAB",
   "minimum_chrome_version": "116",
   "permissions": [
     "tabs",
     "storage",
     "offscreen",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"

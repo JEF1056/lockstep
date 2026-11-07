@@ -3,6 +3,22 @@
   'use strict';
 
   let redirectTimer = null;
+  let cachedVersion = null;
+
+  async function fetchVersion() {
+    try {
+      const res = await fetch('./version.json', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.version) {
+          cachedVersion = data.version;
+          return cachedVersion;
+        }
+      }
+    } catch (_) {}
+    cachedVersion = '1.0';
+    return cachedVersion;
+  }
 
   function isMobileOrTablet() {
     const ua = navigator.userAgent || '';
@@ -118,7 +134,21 @@
         headerBadge.innerHTML = '<span class="badge-dot dot-accent pulse-anim"></span><span class="text-primary font-semibold">Invite Active · ~14ms</span>';
       } else {
         headerBadge.className = 'header-badge badge-onboarding';
-        headerBadge.innerHTML = '<span class="badge-dot dot-muted"></span><span>v1.0 · P2P</span>';
+        const displayVersion = cachedVersion || '1.0';
+        headerBadge.innerHTML = `<span class="badge-dot dot-muted"></span><span>v${displayVersion} · P2P</span>`;
+        if (cachedVersion === null) {
+          fetchVersion().then(ver => {
+            const hData = parseHash();
+            const q = new URLSearchParams(window.location.search);
+            const pKey = hData.pair || (q.get('screen') ? 'lk-7x9q-v2m1' : '');
+            if (!pKey) {
+              const el = document.getElementById('header-badge');
+              if (el) {
+                el.innerHTML = `<span class="badge-dot dot-muted"></span><span>v${ver} · P2P</span>`;
+              }
+            }
+          });
+        }
       }
     }
 

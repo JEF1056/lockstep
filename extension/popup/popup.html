@@ -33,11 +33,23 @@
         </span>
         <!-- 1C: Locked/Syncing Gradient Pill -->
         <span id="chip-syncing" class="status-chip chip-syncing hidden">
-          <span class="status-dot dot-cyan animate-pulse"></span>
-          <span>LOCKED</span>
+          <span id="sync-chip-dot" class="status-dot dot-cyan animate-pulse"></span>
+          <span id="sync-chip-text">LOCKED</span>
         </span>
       </div>
     </header>
+
+    <!-- Update Banner (hidden by default) -->
+    <div id="update-banner" class="update-banner hidden" role="region" aria-label="Extension update available">
+      <div class="update-banner-info">
+        <span class="update-dot" aria-hidden="true"></span>
+        <span id="update-version-text" class="update-version-text">v1.0.0 ready</span>
+      </div>
+      <div class="update-actions">
+        <a id="update-download-link" class="update-link" href="#" target="_blank" rel="noopener noreferrer">Download</a>
+        <button id="btn-update-reload" class="btn-update-reload" type="button" title="Extract &amp; overwrite the extension folder, then click Reload">Reload</button>
+      </div>
+    </div>
 
     <!-- State 1A: Unpaired (First Run) -->
     <main id="view-unpaired" class="view">
@@ -116,8 +128,8 @@
 
       <!-- Quiet Footer -->
       <footer class="popup-footer">
-        <span class="footer-hint">Hover to pick</span>
-        <button id="btn-unpair-idle" class="btn-quiet" type="button">Unpair</button>
+        <span class="footer-hint">Click any highlighted video</span>
+        <button id="btn-unpair-idle" class="btn-unpair-danger" type="button">Unpair</button>
       </footer>
     </main>
 
@@ -146,14 +158,22 @@
 
         <!-- Action Button Row -->
         <div class="button-row">
-          <button id="btn-end-session" class="btn btn-destructive flex-1" type="button">
+          <button id="btn-copy-sync-invite" class="btn btn-primary flex-1" type="button" title="Copy Invite Link" aria-label="Copy Invite Link">
+            <svg class="btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            <span id="copy-sync-btn-text">Copy Invite Link</span>
+          </button>
+
+          <button id="btn-end-session" class="btn btn-destructive btn-icon-label" type="button">
             <svg class="btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <rect x="5" y="5" width="14" height="14" rx="2" ry="2"/>
             </svg>
-            <span>End Session</span>
+            <span id="end-session-btn-text">End</span>
           </button>
 
-          <button id="btn-resync" class="btn btn-secondary btn-icon-label" type="button" title="Force timestamp snap" aria-label="Resync session">
+          <button id="btn-resync" class="btn btn-secondary btn-icon-label hidden" type="button" title="Force timestamp snap" aria-label="Resync session">
             <svg class="btn-icon icon-cyan" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/>
             </svg>
@@ -164,8 +184,8 @@
 
       <!-- Quiet Footer -->
       <footer class="popup-footer">
-        <span class="footer-hint">Both browsers synced</span>
-        <button id="btn-unpair-sync" class="btn-quiet" type="button">Unpair</button>
+        <span id="sync-footer-hint" class="footer-hint">Both browsers synced</span>
+        <button id="btn-unpair-sync" class="btn-unpair-danger" type="button">Unpair</button>
       </footer>
     </main>
   </div>

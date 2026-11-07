@@ -3,6 +3,11 @@
 const INVITE_BASE_URL = 'https://jef1056.github.io/lockstep/';
 
 // DOM Elements
+const updateBanner = document.getElementById('update-banner');
+const updateVersionText = document.getElementById('update-version-text');
+const updateDownloadLink = document.getElementById('update-download-link');
+const btnUpdateReload = document.getElementById('btn-update-reload');
+
 const chipIdle = document.getElementById('chip-idle');
 const chipStandby = document.getElementById('chip-standby');
 const chipSyncing = document.getElementById('chip-syncing');
@@ -37,12 +42,25 @@ const syncStatusDot = document.getElementById('sync-status-dot');
 const syncStatusText = document.getElementById('sync-status-text');
 const syncMutedWarning = document.getElementById('sync-muted-warning');
 const btnEndSession = document.getElementById('btn-end-session');
+const endSessionBtnText = document.getElementById('end-session-btn-text');
 const btnResync = document.getElementById('btn-resync');
 const resyncBtnText = document.getElementById('resync-btn-text');
 const btnUnpairSync = document.getElementById('btn-unpair-sync');
+const syncChipDot = document.getElementById('sync-chip-dot');
+const syncChipText = document.getElementById('sync-chip-text');
+const syncFooterHint = document.getElementById('sync-footer-hint');
+const btnCopySyncInvite = document.getElementById('btn-copy-sync-invite');
+const copySyncBtnText = document.getElementById('copy-sync-btn-text');
 
 let currentStatus = null;
 let copyTimeout = null;
+let copySyncTimeout = null;
+let copySyncFeedbackActive = false;
+let armedTabId = null;
+
+function isSupportedUrl(url) {
+  return typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'));
+}
 
 // Send message to background service worker
 function sendSw(message) {
@@ -114,19 +132,29 @@ async function fetchStatus() {
 
   // Storage fallback
   try {
-    const local = await chrome.storage.local.get(['pairKey', 'peerId']);
+    const local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo']);
     const session = chrome.storage.session
       ? await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted'])
       : {};
+    let inviteUrl = null;
+    if (local.pairKey) {
+      const hashParts = [`pair=${encodeURIComponent(local.pairKey)}`];
+      if (session.activeSession?.pageUrl) {
+        hashParts.push(`url=${encodeURIComponent(session.activeSession.pageUrl)}`);
+      }
+      inviteUrl = `${INVITE_BASE_URL}#${hashParts.join('&')}`;
+    }
     return {
       pairKey: local.pairKey || null,
       peerOnline: session.peerOnline || false,
       rttMs: session.rttMs ?? null,
       activeSession: session.activeSession || null,
-      autoplayMuted: session.autoplayMuted || false
+      autoplayMuted: session.autoplayMuted || false,
+      updateInfo: local.updateInfo || null,
+      inviteUrl
     };
   } catch {
-    return { pairKey: null, peerOnline: false, rttMs: null, activeSession: null, autoplayMuted: false };
+    return { pairKey: null, peerOnline: false, rttMs: null, activeSession: null, autoplayMuted: false, updateInfo: null, inviteUrl: null };
   }
 }
 
@@ -138,6 +166,22 @@ async function render() {
   const peerOnline = Boolean(currentStatus.peerOnline);
   const rttMs = currentStatus.rttMs;
   const isMuted = Boolean(currentStatus.autoplayMuted || activeSession?.autoplayMuted || activeSession?.isMuted);
+  const updateInfo = currentStatus.updateInfo;
+
+  // Toggle update banner
+  if (updateBanner) {
+    if (updateInfo?.available) {
+      updateBanner.classList.remove('hidden');
+      if (updateVersionText) {
+        updateVersionText.textContent = `v${updateInfo.version || ''} ready`;
+      }
+      if (updateDownloadLink && updateInfo.zipUrl) {
+        updateDownloadLink.href = updateInfo.zipUrl;
+      }
+    } else {
+      updateBanner.classList.add('hidden');
+    }
+  }
 
   const isSyncing = Boolean(pairKey && activeSession);
   const isPairedIdle = Boolean(pairKey && !activeSession);
@@ -171,6 +215,21 @@ async function render() {
     chipSyncing.classList.remove('hidden');
   }
 
+  // Auto-enable video picking when popup is open in Standby
+  if (!isPairedIdle) {
+    armedTabId = null;
+  } else {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id && tab.id !== armedTabId && isSupportedUrl(tab.url)) {
+        armedTabId = tab.id;
+        sendSw({ target: 'sw', type: 'ARM_STANDBY_PICKER', tabId: tab.id });
+      }
+    } catch {
+      // Ignore tab query errors in popup
+    }
+  }
+
   // Populate 1B Paired Standby
   if (isPairedIdle) {
     idleKeyValue.textContent = pairKey;
@@ -186,9 +245,50 @@ async function render() {
   // Populate 1C Active Sync
   if (isSyncing) {
     syncDomain.textContent = extractDomain(activeSession);
-    syncPing.textContent = `${rttMs ?? 0}ms`;
-    syncStatusDot.className = 'status-dot dot-emerald';
-    syncStatusText.textContent = 'p2p locked · buffer match';
+
+    if (peerOnline) {
+      chipSyncing.classList.remove('waiting');
+      if (syncChipDot) syncChipDot.className = 'status-dot dot-cyan animate-pulse';
+      if (syncChipText) syncChipText.textContent = 'LOCKED';
+      syncPing.textContent = `${rttMs ?? 0}ms`;
+      syncStatusDot.className = 'status-dot dot-emerald';
+      syncStatusText.textContent = 'p2p locked · buffer match';
+      if (syncFooterHint) syncFooterHint.textContent = 'Both browsers synced';
+
+      btnEndSession.className = 'btn btn-destructive flex-1';
+      btnEndSession.style.order = '1';
+      if (endSessionBtnText) endSessionBtnText.textContent = 'End Session';
+
+      btnResync.classList.remove('hidden');
+      btnResync.style.order = '2';
+
+      btnCopySyncInvite.className = 'btn btn-secondary btn-icon-label';
+      btnCopySyncInvite.style.order = '3';
+      if (!copySyncFeedbackActive && copySyncBtnText) {
+        copySyncBtnText.textContent = 'Copy';
+      }
+    } else {
+      chipSyncing.classList.add('waiting');
+      if (syncChipDot) syncChipDot.className = 'status-dot dot-amber animate-pulse';
+      if (syncChipText) syncChipText.textContent = 'WAITING';
+      syncPing.textContent = 'Invite ready';
+      syncStatusDot.className = 'status-dot dot-amber';
+      syncStatusText.textContent = 'Waiting for partner to join…';
+      if (syncFooterHint) syncFooterHint.textContent = 'Share invite link to connect';
+
+      btnCopySyncInvite.className = 'btn btn-primary flex-1';
+      btnCopySyncInvite.style.order = '1';
+      if (!copySyncFeedbackActive && copySyncBtnText) {
+        copySyncBtnText.textContent = 'Copy Invite Link';
+      }
+
+      btnEndSession.className = 'btn btn-destructive btn-icon-label';
+      btnEndSession.style.order = '2';
+      if (endSessionBtnText) endSessionBtnText.textContent = 'End';
+
+      btnResync.classList.add('hidden');
+      btnResync.style.order = '3';
+    }
 
     if (isMuted) {
       syncMutedWarning.classList.remove('hidden');
@@ -199,6 +299,41 @@ async function render() {
 }
 
 // Handlers
+function showSyncCopiedFeedback() {
+  if (copySyncTimeout) clearTimeout(copySyncTimeout);
+  copySyncFeedbackActive = true;
+  if (copySyncBtnText) copySyncBtnText.textContent = 'Copied!';
+  copySyncTimeout = setTimeout(() => {
+    copySyncFeedbackActive = false;
+    copySyncTimeout = null;
+    if (copySyncBtnText) {
+      copySyncBtnText.textContent = currentStatus?.peerOnline ? 'Copy' : 'Copy Invite Link';
+    }
+  }, 1500);
+}
+
+async function handleCopySyncInvite() {
+  const inviteUrl = currentStatus?.inviteUrl || (currentStatus?.pairKey
+    ? `${INVITE_BASE_URL}#pair=${encodeURIComponent(currentStatus.pairKey)}`
+    : null);
+  if (!inviteUrl) return;
+  const ok = await copyText(inviteUrl);
+  if (ok) {
+    showSyncCopiedFeedback();
+  }
+}
+
+async function handlePairedPick() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id && isSupportedUrl(tab.url)) {
+      await sendSw({ target: 'sw', type: 'ARM_STANDBY_PICKER', tabId: tab.id });
+    }
+  } finally {
+    window.close();
+  }
+}
+
 async function handlePickVideo() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -217,8 +352,9 @@ async function handlePickVideo() {
 
 async function handleConnect(e) {
   e.preventDefault();
-  const pairKey = inputPairKey.value.trim();
-  if (!pairKey) return;
+  const rawKey = inputPairKey.value.trim();
+  if (!rawKey) return;
+  const pairKey = rawKey.toLowerCase();
   inputPairKey.disabled = true;
   btnConnect.disabled = true;
   try {
@@ -242,6 +378,23 @@ async function handleCopyInvite() {
 }
 
 async function handleUnpair() {
+  // Optimistic instant reset to 1A
+  currentStatus = {
+    pairKey: null,
+    peerOnline: false,
+    rttMs: null,
+    activeSession: null,
+    autoplayMuted: false,
+    updateInfo: currentStatus?.updateInfo || null,
+    inviteUrl: null
+  };
+  viewUnpaired.classList.remove('hidden');
+  viewPairedIdle.classList.add('hidden');
+  viewSyncing.classList.add('hidden');
+  chipIdle.classList.remove('hidden');
+  chipStandby.classList.add('hidden');
+  chipSyncing.classList.add('hidden');
+
   await sendSw({ target: 'sw', type: 'UNPAIR' });
   await render();
 }
@@ -274,12 +427,20 @@ async function handleResync() {
 // Wire Event Listeners
 btnUnpairedPick.addEventListener('click', handlePickVideo);
 formConnect.addEventListener('submit', handleConnect);
-btnPairedPick.addEventListener('click', handlePickVideo);
+btnPairedPick.addEventListener('click', handlePairedPick);
 btnCopyInvite.addEventListener('click', handleCopyInvite);
 btnUnpairIdle.addEventListener('click', handleUnpair);
 btnEndSession.addEventListener('click', handleEndSession);
 btnResync.addEventListener('click', handleResync);
 btnUnpairSync.addEventListener('click', handleUnpair);
+btnCopySyncInvite.addEventListener('click', handleCopySyncInvite);
+if (btnUpdateReload) {
+  btnUpdateReload.addEventListener('click', async () => {
+    btnUpdateReload.disabled = true;
+    await sendSw({ target: 'sw', type: 'RELOAD_EXTENSION' });
+    window.close();
+  });
+}
 
 // Listen for storage changes
 if (chrome.storage?.onChanged) {

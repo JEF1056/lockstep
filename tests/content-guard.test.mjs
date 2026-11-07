@@ -15,7 +15,7 @@ const CONTENT_MAIN_PATH = path.join(ROOT_DIR, 'extension/content/content-main.js
 const CONTENT_PATH = path.join(ROOT_DIR, 'extension/content/content.js');
 
 describe('Content Guard - Zero DOM Injection Static AST / Token Check', () => {
-  const forbiddenPatterns = [
+  const forbiddenPatternsInMain = [
     { pattern: /\.appendChild\s*\(/, name: 'appendChild' },
     { pattern: /\.insertBefore\s*\(/, name: 'insertBefore' },
     { pattern: /\.attachShadow\s*\(/, name: 'attachShadow' },
@@ -28,7 +28,7 @@ describe('Content Guard - Zero DOM Injection Static AST / Token Check', () => {
 
   test('content-main.js contains zero forbidden DOM mutation or creation calls', () => {
     const code = fs.readFileSync(CONTENT_MAIN_PATH, 'utf-8');
-    for (const { pattern, name } of forbiddenPatterns) {
+    for (const { pattern, name } of forbiddenPatternsInMain) {
       assert.equal(
         pattern.test(code),
         false,
@@ -37,14 +37,25 @@ describe('Content Guard - Zero DOM Injection Static AST / Token Check', () => {
     }
   });
 
-  test('content.js contains zero forbidden DOM mutation or creation calls', () => {
-    const code = fs.readFileSync(CONTENT_PATH, 'utf-8');
-    for (const { pattern, name } of forbiddenPatterns) {
-      assert.equal(
-        pattern.test(code),
-        false,
-        `content.js must not contain ${name}`
-      );
+  const bannedHtmlPatterns = [
+    { pattern: /\.innerHTML\b/, name: 'innerHTML' },
+    { pattern: /\.outerHTML\b/, name: 'outerHTML' },
+    { pattern: /\.insertAdjacentHTML\b/, name: 'insertAdjacentHTML' }
+  ];
+
+  test('all extension/content/*.js files ban innerHTML, outerHTML, and insertAdjacentHTML', () => {
+    const contentDir = path.join(ROOT_DIR, 'extension/content');
+    const contentFiles = fs.readdirSync(contentDir).filter(f => f.endsWith('.js'));
+    assert.ok(contentFiles.length > 0, 'content files should exist');
+    for (const file of contentFiles) {
+      const code = fs.readFileSync(path.join(contentDir, file), 'utf-8');
+      for (const { pattern, name } of bannedHtmlPatterns) {
+        assert.equal(
+          pattern.test(code),
+          false,
+          `${file} must not contain ${name}`
+        );
+      }
     }
   });
 });
@@ -229,6 +240,91 @@ describe('content.js - Overlay Piercing & Element Picker', () => {
   let mockChrome;
   let mockVideo;
   let sentMessages;
+  let docElement;
+  let docBody;
+
+  class MockElement {
+    constructor(tagName, ns) {
+      this.tagName = tagName.toUpperCase();
+      this.namespaceURI = ns || null;
+      this.id = '';
+      this.className = '';
+      this.textContent = '';
+      this.style = {};
+      this.attributes = {};
+      this.children = [];
+      this.parentNode = null;
+      this.shadowRoot = null;
+      this._shadowRoot = null;
+      this._listeners = {};
+    }
+    setAttribute(name, val) {
+      this.attributes[name] = String(val);
+    }
+    getAttribute(name) {
+      return this.attributes[name] ?? null;
+    }
+    appendChild(child) {
+      if (child.parentNode && typeof child.parentNode.removeChild === 'function') {
+        child.parentNode.removeChild(child);
+      }
+      this.children.push(child);
+      child.parentNode = this;
+      return child;
+    }
+    insertBefore(newChild, refChild) {
+      if (newChild.parentNode && typeof newChild.parentNode.removeChild === 'function') {
+        newChild.parentNode.removeChild(newChild);
+      }
+      const idx = this.children.indexOf(refChild);
+      if (idx === -1) {
+        this.children.push(newChild);
+      } else {
+        this.children.splice(idx, 0, newChild);
+      }
+      newChild.parentNode = this;
+      return newChild;
+    }
+    removeChild(child) {
+      const idx = this.children.indexOf(child);
+      if (idx !== -1) {
+        this.children.splice(idx, 1);
+        child.parentNode = null;
+      }
+      return child;
+    }
+    remove() {
+      if (this.parentNode && typeof this.parentNode.removeChild === 'function') {
+        this.parentNode.removeChild(this);
+      }
+    }
+    attachShadow({ mode }) {
+      const shadow = new MockElement('SHADOW-ROOT');
+      this._shadowRoot = shadow;
+      if (mode !== 'closed') {
+        this.shadowRoot = shadow;
+      }
+      return shadow;
+    }
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
+    }
+    querySelector(sel) {
+      return null;
+    }
+    querySelectorAll(sel) {
+      return [];
+    }
+    addEventListener(type, fn) {
+      if (!this._listeners[type]) this._listeners[type] = [];
+      this._listeners[type].push(fn);
+    }
+    removeEventListener(type, fn) {
+      if (this._listeners[type]) {
+        this._listeners[type] = this._listeners[type].filter(f => f !== fn);
+      }
+    }
+  }
 
   beforeEach(() => {
     sentMessages = [];
@@ -243,7 +339,7 @@ describe('content.js - Overlay Piercing & Element Picker', () => {
       videoWidth: 1280,
       videoHeight: 720,
       muted: false,
-      style: { outline: '', outlineOffset: '', cursor: '' },
+      style: { cursor: '' },
       getBoundingClientRect: () => ({ left: 100, top: 100, right: 900, bottom: 600, width: 800, height: 500 }),
       addEventListener: () => {},
       removeEventListener: () => {},
@@ -279,27 +375,44 @@ describe('content.js - Overlay Piercing & Element Picker', () => {
     mockWindow.top = mockWindow;
     mockWindow.window = mockWindow;
 
+    docElement = new MockElement('HTML');
+    docBody = new MockElement('BODY');
+    docElement.appendChild(docBody);
+
     mockDoc = {
       readyState: 'complete',
-      body: { style: { cursor: '' } },
-      documentElement: { style: {} },
+      body: docBody,
+      documentElement: docElement,
+      createElement: (tag) => new MockElement(tag),
+      createElementNS: (ns, tag) => new MockElement(tag, ns),
+      getElementById: (id) => {
+        function search(el) {
+          if (!el) return null;
+          if (el.id === id) return el;
+          for (const c of (el.children || [])) {
+            const found = search(c);
+            if (found) return found;
+          }
+          return null;
+        }
+        return search(docElement);
+      },
       querySelectorAll: (sel) => {
         if (sel === 'video') return [mockVideo];
-        return [mockVideo];
+        return [];
       },
       querySelector: (sel) => {
         if (sel === 'video') return mockVideo;
         return null;
       },
-      elementsFromPoint: () => {
-        // Overlay banner on top of video
-        const overlay = {
-          tagName: 'DIV',
-          className: 'ad-overlay-shield',
-          style: { outline: '', outlineOffset: '', cursor: '' },
-          getBoundingClientRect: () => ({ left: 0, top: 0, right: 1000, bottom: 1000, width: 1000, height: 1000 })
-        };
-        return [overlay, mockVideo];
+      elementsFromPoint: (x, y) => {
+        const overlay = new MockElement('DIV');
+        overlay.className = 'ad-overlay-shield';
+        overlay.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1000, bottom: 1000, width: 1000, height: 1000 });
+        if (x >= 100 && x <= 900 && y >= 100 && y <= 600) {
+          return [overlay, mockVideo];
+        }
+        return [overlay];
       }
     };
 
@@ -351,54 +464,153 @@ describe('content.js - Overlay Piercing & Element Picker', () => {
   afterEach(() => {
     const onMessage = mockChrome?.runtime?.onMessage?._listeners?.[0];
     if (onMessage) {
+      onMessage({ type: 'CANCEL_PICKER' }, {}, () => {});
       onMessage({ type: 'DETACH_SYNC' }, {}, () => {});
     }
   });
 
-  test('START_PICKER and CANCEL_PICKER cycle restores exact original inline styles', () => {
+  test('0 Lockstep DOM nodes before START_PICKER, candidate overlay creation on START_PICKER, and 0 nodes after CANCEL_PICKER', () => {
+    // 1. Verify 0 Lockstep DOM nodes before START_PICKER
+    assert.equal(mockDoc.getElementById('__lockstep-picker-host'), null);
+    assert.equal(docElement.children.length, 1); // only body
+
     const onMessage = mockChrome.runtime.onMessage._listeners[0];
     assert.ok(onMessage, 'onMessage listener should be registered');
 
-    // Preset initial styles on video
-    mockVideo.style.outline = '1px solid red';
-    mockVideo.style.outlineOffset = '2px';
-    mockVideo.style.cursor = 'pointer';
-
-    // Start picker
+    // 2. Start picker
     let startRes;
     onMessage({ type: 'START_PICKER' }, {}, (r) => { startRes = r; });
     assert.equal(startRes.active, true);
-    assert.equal(mockDoc.body.style.cursor, 'crosshair');
 
-    // Simulate pointermove over video
-    const moveListeners = mockWindow._listeners['pointermove'] || [];
-    assert.ok(moveListeners.length > 0);
-    moveListeners[0]({ clientX: 200, clientY: 200 });
+    const host = mockDoc.getElementById('__lockstep-picker-host');
+    assert.ok(host, '__lockstep-picker-host should be mounted in document');
+    assert.equal(host.style.position, 'fixed');
+    assert.equal(host.style.inset, '0');
+    assert.equal(host.style.zIndex, '2147483647');
+    assert.equal(host.style.pointerEvents, 'none');
 
-    // Video should now have temporary outline highlight
-    assert.equal(mockVideo.style.outline, '3px solid #10b981');
-    assert.equal(mockVideo.style.outlineOffset, '-3px');
-    assert.equal(mockVideo.style.cursor, 'crosshair');
+    // Closed shadow DOM: external shadowRoot is null, internal shadow has candidate card
+    assert.equal(host.shadowRoot, null);
+    assert.ok(host._shadowRoot);
+    assert.equal(host._shadowRoot.children.length, 1);
 
-    // Cancel picker
+    const card = host._shadowRoot.children[0];
+    assert.equal(card.style.border, '1.5px dashed rgba(0,229,255,0.65)');
+    assert.equal(card.style.left, '100px');
+    assert.equal(card.style.top, '100px');
+    assert.equal(card.style.width, '800px');
+    assert.equal(card.style.height, '500px');
+
+    // Pill in card has resting state
+    const pill = card.children[0];
+    assert.ok(pill);
+    const label = pill.children.find(c => c.textContent === 'Selectable video');
+    assert.ok(label, 'Resting pill should say "Selectable video"');
+
+    // 3. Cancel picker
     let cancelRes;
     onMessage({ type: 'CANCEL_PICKER' }, {}, (r) => { cancelRes = r; });
     assert.equal(cancelRes.active, false);
-    assert.equal(mockDoc.body.style.cursor, '');
 
-    // Video should have exact prior styles restored
-    assert.equal(mockVideo.style.outline, '1px solid red');
-    assert.equal(mockVideo.style.outlineOffset, '2px');
-    assert.equal(mockVideo.style.cursor, 'pointer');
+    // Verify 0 Lockstep DOM nodes after CANCEL_PICKER
+    assert.equal(mockDoc.getElementById('__lockstep-picker-host'), null);
+    assert.equal(docElement.children.includes(host), false);
+    assert.equal(docElement.style.cursor || '', '');
   });
 
-  test('Escape key cancels picker and restores styles', () => {
+  test('null return on non-video hover keeps cursor default and card resting', () => {
     const onMessage = mockChrome.runtime.onMessage._listeners[0];
     onMessage({ type: 'START_PICKER' }, {}, () => {});
 
+    const host = mockDoc.getElementById('__lockstep-picker-host');
+    assert.ok(host);
+    const card = host._shadowRoot.children[0];
+
+    // Simulate pointermove over non-video coordinate (x=50, y=50)
+    const moveListeners = mockWindow._listeners['pointermove'] || [];
+    assert.ok(moveListeners.length > 0);
+    moveListeners[0]({ clientX: 50, clientY: 50 });
+
+    // Cursor should NOT be pointer
+    assert.notEqual(docElement.style.cursor, 'pointer');
+    // Card should remain dashed resting style
+    assert.equal(card.style.border, '1.5px dashed rgba(0,229,255,0.65)');
+
+    onMessage({ type: 'CANCEL_PICKER' }, {}, () => {});
+  });
+
+  test('hovering over video updates card styles, displays interlocking mark, and sets pointer cursor', () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    onMessage({ type: 'START_PICKER' }, {}, () => {});
+
+    const host = mockDoc.getElementById('__lockstep-picker-host');
+    assert.ok(host);
+    const card = host._shadowRoot.children[0];
+
+    // Simulate pointermove over video (x=200, y=200)
+    const moveListeners = mockWindow._listeners['pointermove'] || [];
+    moveListeners[0]({ clientX: 200, clientY: 200 });
+
+    // Cursor should be pointer
+    assert.equal(docElement.style.cursor, 'pointer');
+
+    // Card should have hovered styles
+    assert.equal(card.style.border, '2px solid #00E5FF');
+    assert.ok(card.style.background.includes('linear-gradient'));
+    assert.ok(card.style.boxShadow.includes('24px'));
+
+    // Pill should have "Click to sync"
+    const pill = card.children[0];
+    const clickLabel = pill.children.find(c => c.textContent === 'Click to sync');
+    assert.ok(clickLabel, 'Pill should display "Click to sync" on hover');
+
+    // Simulate pointermove away to non-video coordinate
+    moveListeners[0]({ clientX: 50, clientY: 50 });
+    assert.notEqual(docElement.style.cursor, 'pointer');
+    assert.equal(card.style.border, '1.5px dashed rgba(0,229,255,0.65)');
+
+    onMessage({ type: 'CANCEL_PICKER' }, {}, () => {});
+  });
+
+  test('non-blocking outside click dismisses picker and sends PICKER_DISMISSED without preventDefault', async () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    onMessage({ type: 'START_PICKER' }, {}, () => {});
+    assert.ok(mockDoc.getElementById('__lockstep-picker-host'));
+
+    let prevented = false;
+    let stopped = false;
+    const clickListeners = mockWindow._listeners['click'] || [];
+    assert.ok(clickListeners.length > 0);
+
+    // Simulate click outside any video (x=50, y=50)
+    await clickListeners[0]({
+      clientX: 50,
+      clientY: 50,
+      preventDefault: () => { prevented = true; },
+      stopImmediatePropagation: () => { stopped = true; }
+    });
+
+    // Outside click must NOT be prevented or stopped
+    assert.equal(prevented, false);
+    assert.equal(stopped, false);
+
+    // Host removed (0 Lockstep DOM nodes)
+    assert.equal(mockDoc.getElementById('__lockstep-picker-host'), null);
+
+    // SW notified of dismissal
+    const dismissedMsg = sentMessages.find(m => m.type === 'PICKER_DISMISSED');
+    assert.ok(dismissedMsg, 'PICKER_DISMISSED message should be sent to SW');
+    assert.equal(dismissedMsg.target, 'sw');
+  });
+
+  test('Escape key cancels picker, removes overlay host, and sends PICKER_DISMISSED', () => {
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    onMessage({ type: 'START_PICKER' }, {}, () => {});
+    assert.ok(mockDoc.getElementById('__lockstep-picker-host'));
+
     const moveListeners = mockWindow._listeners['pointermove'];
     moveListeners[0]({ clientX: 200, clientY: 200 });
-    assert.equal(mockVideo.style.outline, '3px solid #10b981');
+    assert.equal(docElement.style.cursor, 'pointer');
 
     let prevented = false;
     let stopped = false;
@@ -411,13 +623,20 @@ describe('content.js - Overlay Piercing & Element Picker', () => {
 
     assert.equal(prevented, true);
     assert.equal(stopped, true);
-    assert.equal(mockVideo.style.outline, '');
-    assert.equal(mockDoc.body.style.cursor, '');
+
+    // Host removed (0 Lockstep DOM nodes)
+    assert.equal(mockDoc.getElementById('__lockstep-picker-host'), null);
+    assert.equal(docElement.style.cursor, '');
+
+    const dismissedMsg = sentMessages.find(m => m.type === 'PICKER_DISMISSED');
+    assert.ok(dismissedMsg);
+    assert.equal(dismissedMsg.target, 'sw');
   });
 
-  test('pierces overlay shields, blocks pop-unders, and copies invite on pick', async () => {
+  test('pierces overlay shields, blocks pop-unders, copies invite on pick, and leaves 0 DOM nodes after VIDEO_PICKED', async () => {
     const onMessage = mockChrome.runtime.onMessage._listeners[0];
     onMessage({ type: 'START_PICKER' }, {}, () => {});
+    assert.ok(mockDoc.getElementById('__lockstep-picker-host'));
 
     let prevented = false;
     let stopped = false;
@@ -448,6 +667,9 @@ describe('content.js - Overlay Piercing & Element Picker', () => {
 
     // Auto-copied invite link
     assert.equal(mockWindow._copiedText, 'https://jef1056.github.io/lockstep/#pair=testkey');
+
+    // 0 Lockstep DOM nodes after VIDEO_PICKED
+    assert.equal(mockDoc.getElementById('__lockstep-picker-host'), null);
   });
 
   test('pointer action triggers 600ms popup suppression and pickTarget blocks mouseup/click for 500ms', async () => {

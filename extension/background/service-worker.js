@@ -6,8 +6,37 @@ import {
   canonicalizeVideoUrl,
   findMatchingTab
 } from '../shared/url-match.js';
+import { compareVersions } from '../shared/version.js';
 
 let offscreenCreating = null;
+let armedPickerTabId = null;
+
+/**
+ * Cancel standby video picker on target tab across frames.
+ */
+async function cancelArmedPicker(tabId) {
+  const targetId = tabId || armedPickerTabId;
+  armedPickerTabId = null;
+  if (!targetId) return;
+  try {
+    chrome.tabs.sendMessage(targetId, {
+      target: 'content',
+      type: 'CANCEL_PICKER'
+    }).catch(() => {});
+    if (chrome.webNavigation?.getAllFrames) {
+      const frames = await chrome.webNavigation.getAllFrames({ tabId: targetId }).catch(() => []);
+      for (const frame of frames) {
+        if (frame.frameId !== 0) {
+          chrome.tabs.sendMessage(
+            targetId,
+            { target: 'content', type: 'CANCEL_PICKER' },
+            { frameId: frame.frameId }
+          ).catch(() => {});
+        }
+      }
+    }
+  } catch (_) {}
+}
 
 /**
  * Check if the offscreen document is currently active.
@@ -62,10 +91,12 @@ async function ensureOffscreen() {
 
 /**
  * Joins an offscreen room and persists returned peerId.
+ * Normalizes pairKey to trimmed lowercase.
  */
 async function joinOffscreenRoom(pairKey) {
   if (!pairKey) return null;
-  const resp = await sendToOffscreen({ type: 'JOIN_ROOM', pairKey });
+  const normalizedKey = String(pairKey).trim().toLowerCase();
+  const resp = await sendToOffscreen({ type: 'JOIN_ROOM', pairKey: normalizedKey });
   if (resp?.selfId) {
     await chrome.storage.local.set({ peerId: resp.selfId });
   }
@@ -75,6 +106,7 @@ async function joinOffscreenRoom(pairKey) {
 /**
  * Send a message to the offscreen document safely.
  * Recovers room subscription if offscreen document was freshly created.
+ * Retries up to 4 times on "Receiving end does not exist" with backoff (60ms, 140ms, 300ms).
  */
 async function sendToOffscreen(message) {
   try {
@@ -85,15 +117,22 @@ async function sendToOffscreen(message) {
         await joinOffscreenRoom(pairKey);
       }
     }
-    return await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ target: 'offscreen', ...message }, (resp) => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-        } else {
-          resolve(resp || { ok: true });
-        }
+    const delays = [60, 140, 300];
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      const res = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ target: 'offscreen', ...message }, (resp) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(resp || { ok: true });
+          }
+        });
       });
-    });
+      if (res?.ok || !res?.error?.includes('Receiving end does not exist') || attempt === delays.length) {
+        return res;
+      }
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+    }
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -121,7 +160,7 @@ async function updateBadge(activeSession, isMuted) {
  */
 async function getSessionState() {
   if (chrome.storage?.session) {
-    return await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted']);
+    return await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted', 'pendingReload']);
   }
   return {};
 }
@@ -133,6 +172,87 @@ async function setSessionState(data) {
 }
 
 /**
+ * Ensure content scripts are active in a tab.
+ * Pings first, falls back to programmatic injection into MAIN and ISOLATED worlds.
+ */
+async function ensureContentScripts(tabId) {
+  if (!tabId) return false;
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { target: 'content', type: 'PING' });
+    if (res?.ok) return true;
+  } catch {}
+  try {
+    if (chrome.scripting?.executeScript) {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ['content/content-main.js'],
+        world: 'MAIN'
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ['content/content.js']
+      });
+      return true;
+    }
+  } catch (err) {
+    console.warn('[Lockstep SW] ensureContentScripts fallback failed:', err);
+  }
+  return false;
+}
+
+/**
+ * Check if extension on disk is newer than runtime and reload or set pendingReload.
+ */
+async function checkDiskReload() {
+  try {
+    const runtimeVersion = chrome.runtime.getManifest?.()?.version;
+    if (!runtimeVersion) return false;
+    const res = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
+    if (!res.ok) return false;
+    const diskManifest = await res.json();
+    if (diskManifest?.version && compareVersions(diskManifest.version, runtimeVersion) > 0) {
+      const session = await getSessionState();
+      if (!session.activeSession) {
+        chrome.runtime.reload();
+        return true;
+      } else {
+        await setSessionState({ pendingReload: true });
+        return false;
+      }
+    }
+  } catch (err) {
+    console.warn('[Lockstep SW] checkDiskReload failed:', err);
+  }
+  return false;
+}
+
+/**
+ * Periodically check for updates on live disk and GitHub Pages version manifest.
+ */
+async function checkForUpdates() {
+  await checkDiskReload();
+  try {
+    const runtimeVersion = chrome.runtime.getManifest?.()?.version;
+    const res = await fetch('https://jef1056.github.io/lockstep/version.json', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      const remoteVersion = data?.version;
+      const available = Boolean(remoteVersion && runtimeVersion && compareVersions(remoteVersion, runtimeVersion) > 0);
+      const updateInfo = {
+        available,
+        version: remoteVersion || '',
+        zipUrl: data?.zipUrl || 'https://jef1056.github.io/lockstep/lockstep.zip'
+      };
+      await chrome.storage.local.set({ updateInfo });
+      return updateInfo;
+    }
+  } catch (err) {
+    console.warn('[Lockstep SW] checkForUpdates remote fetch failed:', err);
+  }
+  return null;
+}
+
+/**
  * Auto-harvest #pair invite tabs.
  */
 async function harvestInviteUrl(tabId, url) {
@@ -140,7 +260,7 @@ async function harvestInviteUrl(tabId, url) {
   const parsed = parseInviteUrl(url);
   if (!parsed || !parsed.pairKey) return false;
 
-  const pairKey = parsed.pairKey;
+  const pairKey = String(parsed.pairKey).trim().toLowerCase();
   await chrome.storage.local.set({ pairKey });
   await joinOffscreenRoom(pairKey);
 
@@ -213,6 +333,7 @@ async function harvestInviteUrl(tabId, url) {
     chrome.tabs.onUpdated.addListener(listener);
 
     if (existingTab) {
+      await ensureContentScripts(targetTabId);
       if (parsed.sourceHint) {
         chrome.tabs.sendMessage(
           targetTabId,
@@ -269,7 +390,21 @@ async function initialize() {
 
   const session = await getSessionState();
   await updateBadge(session.activeSession, Boolean(session.autoplayMuted));
+
+  try {
+    chrome.alarms?.create('lockstep-update-check', { periodInMinutes: 360 });
+    checkForUpdates().catch(() => {});
+  } catch (err) {
+    console.warn('[Lockstep SW] initialize alarms/update-check failed:', err);
+  }
 }
+
+// Alarm listener for scheduled update checks
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  if (alarm?.name === 'lockstep-update-check') {
+    checkForUpdates().catch(() => {});
+  }
+});
 
 // Lifecycle listeners
 chrome.runtime.onInstalled.addListener(async () => {
@@ -282,8 +417,11 @@ chrome.runtime.onStartup.addListener(async () => {
   await harvestAllTabs();
 });
 
-// Tab removal listener (auto-end session)
+// Tab removal listener (auto-end session & clear armed picker)
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  if (tabId === armedPickerTabId) {
+    armedPickerTabId = null;
+  }
   const session = await getSessionState();
   if (session.activeSession && session.activeSession.tabId === tabId) {
     await sendToOffscreen({
@@ -295,6 +433,18 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       autoplayMuted: false
     });
     await updateBadge(null, false);
+    if (session.pendingReload) {
+      await setSessionState({ pendingReload: false });
+      chrome.runtime.reload();
+      return;
+    }
+  }
+});
+
+// Tab activated listener (cancel armed picker when switching tabs)
+chrome.tabs.onActivated.addListener(async () => {
+  if (armedPickerTabId) {
+    await cancelArmedPicker(armedPickerTabId);
   }
 });
 
@@ -359,6 +509,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleOffscreenMessage(message, sendResponse) {
   const { type } = message;
 
+  if (type === 'OFFSCREEN_READY') {
+    const { pairKey } = await chrome.storage.local.get(['pairKey']);
+    if (pairKey) {
+      await joinOffscreenRoom(pairKey);
+    }
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (type === 'PEER_STATUS') {
     const prevSession = await getSessionState();
     const peerOnline = Boolean(message.peerOnline);
@@ -410,6 +569,9 @@ async function handleOffscreenMessage(message, sendResponse) {
 
     // Handle incoming feed share
     if (payloadType === 'SHARE_FEED') {
+      if (armedPickerTabId) {
+        await cancelArmedPicker(armedPickerTabId);
+      }
       const pageUrl = payload.pageUrl;
       const tabs = await chrome.tabs.query({});
       let targetTab = findMatchingTab(tabs, pageUrl);
@@ -457,6 +619,7 @@ async function handleOffscreenMessage(message, sendResponse) {
       };
 
       if (!isNewTab) {
+        await ensureContentScripts(targetTab.id);
         deliverFeed(targetTab.id);
       } else {
         const listener = (uTabId, uInfo) => {
@@ -508,6 +671,10 @@ async function handleOffscreenMessage(message, sendResponse) {
       });
       await updateBadge(null, false);
       sendResponse({ ok: true });
+      if (session.pendingReload) {
+        await setSessionState({ pendingReload: false });
+        chrome.runtime.reload();
+      }
       return;
     }
 
@@ -522,27 +689,56 @@ async function handleSwMessage(message, sender, sendResponse) {
   const { type } = message;
 
   if (type === 'GET_STATUS') {
-    let local = await chrome.storage.local.get(['pairKey', 'peerId']);
-    const hasDoc = await hasOffscreenDocument();
-    if (local.pairKey && !hasDoc) {
-      await joinOffscreenRoom(local.pairKey);
-      local = await chrome.storage.local.get(['pairKey', 'peerId']);
+    let local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo']);
+    let livePeerOnline = null;
+    let liveRttMs = null;
+    if (local.pairKey) {
+      const roomRes = await joinOffscreenRoom(local.pairKey);
+      if (roomRes && typeof roomRes === 'object') {
+        livePeerOnline = roomRes.peerOnline;
+        liveRttMs = roomRes.rttMs;
+      }
+      local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo']);
     }
     const session = await getSessionState();
+    const effectivePeerOnline = livePeerOnline !== null && livePeerOnline !== undefined ? Boolean(livePeerOnline) : Boolean(session.peerOnline);
+    const effectiveRttMs = liveRttMs !== null && liveRttMs !== undefined ? liveRttMs : (session.rttMs ?? null);
+    const version = chrome.runtime.getManifest?.()?.version || '';
+    if (!session.activeSession) {
+      checkDiskReload().catch(() => {});
+    }
+    const inviteUrl = local.pairKey
+      ? buildInviteUrl({
+          pairKey: local.pairKey,
+          pageUrl: session.activeSession?.pageUrl,
+          sourceHint: session.activeSession?.sourceHint
+        })
+      : null;
     sendResponse({
       ok: true,
+      version,
+      updateInfo: local.updateInfo || null,
       pairKey: local.pairKey || null,
       peerId: local.peerId || null,
-      peerOnline: Boolean(session.peerOnline),
-      rttMs: session.rttMs ?? null,
+      peerOnline: effectivePeerOnline,
+      rttMs: effectiveRttMs,
       activeSession: session.activeSession || null,
-      autoplayMuted: Boolean(session.autoplayMuted)
+      autoplayMuted: Boolean(session.autoplayMuted),
+      inviteUrl
     });
     return;
   }
 
+  if (type === 'RELOAD_EXTENSION') {
+    await chrome.storage.local.remove(['updateInfo']).catch(() => {});
+    sendResponse({ ok: true });
+    chrome.runtime.reload?.();
+    return;
+  }
+
   if (type === 'SET_PAIR_KEY') {
-    const { pairKey } = message;
+    const rawKey = message.pairKey;
+    const pairKey = rawKey ? String(rawKey).trim().toLowerCase() : null;
     if (pairKey) {
       await chrome.storage.local.set({ pairKey });
       await joinOffscreenRoom(pairKey);
@@ -552,19 +748,14 @@ async function handleSwMessage(message, sender, sendResponse) {
   }
 
   if (type === 'UNPAIR') {
-    const session = await getSessionState();
-    if (session.activeSession?.tabId) {
-      chrome.tabs.sendMessage(
-        session.activeSession.tabId,
-        { target: 'content', type: 'DETACH_SYNC' },
-        typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
-      ).catch(() => {});
+    if (armedPickerTabId) {
+      await cancelArmedPicker(armedPickerTabId);
     }
-    await sendToOffscreen({
-      type: 'RTC_SEND',
-      payload: { type: 'SESSION_END' }
-    });
-    await sendToOffscreen({ type: 'LEAVE_ROOM' });
+    const session = await getSessionState();
+    const activeTabId = session.activeSession?.tabId;
+    const activeFrameId = session.activeSession?.frameId;
+
+    // Remove pairKey and reset session state FIRST before teardown
     await chrome.storage.local.remove(['pairKey']);
     await setSessionState({
       activeSession: null,
@@ -573,6 +764,50 @@ async function handleSwMessage(message, sender, sendResponse) {
       autoplayMuted: false
     });
     await updateBadge(null, false);
+
+    if (activeTabId) {
+      chrome.tabs.sendMessage(
+        activeTabId,
+        { target: 'content', type: 'DETACH_SYNC' },
+        typeof activeFrameId === 'number' ? { frameId: activeFrameId } : undefined
+      ).catch(() => {});
+    }
+    await sendToOffscreen({
+      type: 'RTC_SEND',
+      payload: { type: 'SESSION_END' }
+    });
+    await sendToOffscreen({ type: 'LEAVE_ROOM' });
+    await chrome.offscreen?.closeDocument?.().catch(() => {});
+
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (type === 'ARM_STANDBY_PICKER') {
+    const { pairKey } = await chrome.storage.local.get(['pairKey']);
+    const session = await getSessionState();
+    const tabId = message.tabId || sender?.tab?.id;
+    if (pairKey && !session.activeSession && tabId) {
+      await ensureContentScripts(tabId);
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          target: 'content',
+          type: 'START_PICKER'
+        });
+      } catch (err) {
+        console.warn('[Lockstep SW] armStandbyPicker failed:', err);
+      }
+      armedPickerTabId = tabId;
+      sendResponse({ ok: true, armed: true, tabId });
+      return;
+    }
+    sendResponse({ ok: false, armed: false });
+    return;
+  }
+
+  if (type === 'PICKER_DISMISSED') {
+    const targetTabId = sender?.tab?.id || message.tabId || armedPickerTabId;
+    await cancelArmedPicker(targetTabId);
     sendResponse({ ok: true });
     return;
   }
@@ -591,30 +826,14 @@ async function handleSwMessage(message, sender, sendResponse) {
       return;
     }
 
+    await ensureContentScripts(tabId);
     try {
       await chrome.tabs.sendMessage(tabId, {
         target: 'content',
         type: 'START_PICKER'
       });
-    } catch (_) {
-      // ExecuteScript fallback if content scripts not yet injected
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId, allFrames: true },
-          files: ['content/content-main.js'],
-          world: 'MAIN'
-        });
-        await chrome.scripting.executeScript({
-          target: { tabId, allFrames: true },
-          files: ['content/content.js']
-        });
-        await chrome.tabs.sendMessage(tabId, {
-          target: 'content',
-          type: 'START_PICKER'
-        });
-      } catch (err) {
-        console.warn('[Lockstep SW] executeScript/startPicker fallback failed:', err);
-      }
+    } catch (err) {
+      console.warn('[Lockstep SW] startPicker failed:', err);
     }
 
     const tab = await chrome.tabs.get(tabId).catch(() => null);
@@ -648,6 +867,10 @@ async function handleSwMessage(message, sender, sendResponse) {
     });
     await updateBadge(null, false);
     sendResponse({ ok: true });
+    if (session.pendingReload) {
+      await setSessionState({ pendingReload: false });
+      chrome.runtime.reload();
+    }
     return;
   }
 
@@ -687,6 +910,7 @@ async function handleSwMessage(message, sender, sendResponse) {
   }
 
   if (type === 'VIDEO_PICKED') {
+    armedPickerTabId = null;
     const tabId = sender?.tab?.id || message.tabId;
     const pageUrl = sender?.tab?.url || message.pageUrl || '';
     const frameId = sender?.frameId ?? message.frameId ?? 0;

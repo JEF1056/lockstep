@@ -35,6 +35,18 @@ if (!fs.existsSync(manifestPath)) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
     pass('manifest.json is valid JSON');
 
+    if (typeof manifest.key === 'string' && manifest.key.length > 0) {
+      pass(`manifest.json contains public key (${manifest.key.length} chars)`);
+    } else {
+      fail('manifest.json missing required "key" field');
+    }
+
+    if (Array.isArray(manifest.permissions) && manifest.permissions.includes('alarms')) {
+      pass('manifest.json permissions include "alarms"');
+    } else {
+      fail('manifest.json permissions missing "alarms"');
+    }
+
     const filesToCheck = [];
 
     // Icons
@@ -186,41 +198,67 @@ for (const file of jsFiles) {
 }
 pass(`All ${jsFiles.length} JS files verified for zero remote imports and no eval`);
 
-// 4. Zero DOM-insertion calls in extension/content/
-console.log('\n[4/4] Verifying ZERO DOM-insertion calls in extension/content/...');
+// 4. Content script DOM guards: zero DOM-creation in content-main.js, ban innerHTML/outerHTML/insertAdjacentHTML across all extension/content/
+console.log('\n[4/4] Verifying content script DOM guards...');
 const contentJsFiles = findFiles('extension/content', f => f.endsWith('.js'));
 if (contentJsFiles.length === 0) {
   fail('No content scripts found in extension/content/');
 } else {
-  const forbiddenPatterns = [
-    { pattern: /\.appendChild\s*\(/, name: '.appendChild()' },
-    { pattern: /\.insertBefore\s*\(/, name: '.insertBefore()' },
-    { pattern: /\.attachShadow\s*\(/, name: '.attachShadow()' },
-    { pattern: /\.innerHTML\s*=/, name: '.innerHTML =' },
-    { pattern: /\.insertAdjacentHTML\s*\(/, name: '.insertAdjacentHTML()' },
-    { pattern: /\.insertAdjacentElement\s*\(/, name: '.insertAdjacentElement()' },
-    { pattern: /document\.createElement\s*\(/, name: 'document.createElement()' },
-    { pattern: /document\.createElementNS\s*\(/, name: 'document.createElementNS()' },
-  ];
-
-  for (const file of contentJsFiles) {
-    const raw = fs.readFileSync(file, 'utf8');
-    // Strip comments and string literals
+  // 4a. content-main.js: strict ZERO DOM-creation
+  const contentMainFile = 'extension/content/content-main.js';
+  if (fs.existsSync(contentMainFile)) {
+    const raw = fs.readFileSync(contentMainFile, 'utf8');
     const code = raw
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
 
-    let fileViolations = [];
-    for (const { pattern, name } of forbiddenPatterns) {
-      if (pattern.test(code)) {
-        fileViolations.push(name);
-      }
+    const forbiddenMainPatterns = [
+      { pattern: /\.appendChild\s*\(/, name: '.appendChild()' },
+      { pattern: /\.insertBefore\s*\(/, name: '.insertBefore()' },
+      { pattern: /\.attachShadow\s*\(/, name: '.attachShadow()' },
+      { pattern: /\.innerHTML\s*=/, name: '.innerHTML =' },
+      { pattern: /\.outerHTML\s*=/, name: '.outerHTML =' },
+      { pattern: /\.insertAdjacentHTML\s*\(/, name: '.insertAdjacentHTML()' },
+      { pattern: /\.insertAdjacentElement\s*\(/, name: '.insertAdjacentElement()' },
+      { pattern: /document\.createElement\s*\(/, name: 'document.createElement()' },
+      { pattern: /document\.createElementNS\s*\(/, name: 'document.createElementNS()' },
+    ];
+
+    const violations = [];
+    for (const { pattern, name } of forbiddenMainPatterns) {
+      if (pattern.test(code)) violations.push(name);
+    }
+    if (violations.length > 0) {
+      fail(`DOM-creation calls found in ${contentMainFile}: ${violations.join(', ')}`);
+    } else {
+      pass(`content-main.js verified for strict zero DOM-creation`);
+    }
+  } else {
+    fail(`Missing ${contentMainFile}`);
+  }
+
+  // 4b. All extension/content/*.js: ban innerHTML, outerHTML, insertAdjacentHTML
+  const forbiddenHtmlPatterns = [
+    { pattern: /\.innerHTML\s*=/, name: '.innerHTML =' },
+    { pattern: /\.outerHTML\s*=/, name: '.outerHTML =' },
+    { pattern: /\.insertAdjacentHTML\s*\(/, name: '.insertAdjacentHTML()' },
+  ];
+
+  for (const file of contentJsFiles) {
+    const raw = fs.readFileSync(file, 'utf8');
+    const code = raw
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+
+    const violations = [];
+    for (const { pattern, name } of forbiddenHtmlPatterns) {
+      if (pattern.test(code)) violations.push(name);
     }
 
-    if (fileViolations.length > 0) {
-      fail(`DOM-insertion calls found in ${file}: ${fileViolations.join(', ')}`);
+    if (violations.length > 0) {
+      fail(`Forbidden HTML injection found in ${file}: ${violations.join(', ')}`);
     } else {
-      pass(`Zero DOM-insertion calls in ${file}`);
+      pass(`Zero innerHTML / outerHTML / insertAdjacentHTML in ${file}`);
     }
   }
 }

@@ -1,0 +1,61 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies, test, and validate
+        run: npm ci && npm test && npm run validate
+
+      - name: Pack extension
+        run: |
+          MAJOR_MINOR=$(node -p "require('./package.json').version.split('.').slice(0, 2).join('.')")
+          node scripts/pack-extension.mjs --version "${MAJOR_MINOR}.${GITHUB_RUN_NUMBER}" --sha "${GITHUB_SHA::7}"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './docs'
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Create or update rolling GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest docs/lockstep.zip docs/version.json --clobber
+          else
+            gh release create latest docs/lockstep.zip docs/version.json --title "Lockstep Latest" --notes "Automated rolling release"
+          fi

@@ -199,6 +199,12 @@ html, body {
   letter-spacing: 0.05em;
 }
 
+.chip-syncing.waiting {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: var(--warning);
+}
+
 /* Status Indicator Dots */
 .status-dot {
   width: 6px;
@@ -226,6 +232,10 @@ html, body {
   background-color: var(--warning);
 }
 
+.animate-pulse {
+  animation: telemetry-pulse 1600ms ease-in-out infinite;
+}
+
 @keyframes telemetry-pulse {
   0%, 100% {
     opacity: 1;
@@ -235,6 +245,84 @@ html, body {
     opacity: 0.45;
     transform: scale(0.85);
   }
+}
+
+/* --------------------------------------------------------------------------
+   Update Banner (Compact Stitch dark/cyan styling)
+   -------------------------------------------------------------------------- */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background-color: var(--surface-container-high);
+  border-bottom: 1px solid var(--outline);
+  font-family: var(--font-label);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.update-banner-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.update-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background-color: var(--primary);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px var(--primary);
+}
+
+.update-version-text {
+  font-family: var(--font-code);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.update-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-link {
+  color: var(--on-surface-variant);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  transition: color var(--duration-state) var(--ease-state);
+}
+
+.update-link:hover {
+  color: var(--primary);
+}
+
+.btn-update-reload {
+  padding: 2px 7px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--primary);
+  font-family: var(--font-label);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  cursor: pointer;
+  transition: background-color var(--duration-state) var(--ease-state), color var(--duration-state) var(--ease-state);
+}
+
+.btn-update-reload:hover {
+  background-color: var(--primary);
+  color: var(--on-primary);
 }
 
 /* --------------------------------------------------------------------------
@@ -385,6 +473,7 @@ html, body {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.1px;
+  white-space: nowrap;
   cursor: pointer;
   border: none;
   text-decoration: none;
@@ -431,7 +520,7 @@ html, body {
 }
 
 .btn-icon-label {
-  padding: 0 10px;
+  padding: 0 8px;
   flex-shrink: 0;
 }
 
@@ -602,6 +691,26 @@ html, body {
 
 .btn-quiet:hover {
   color: var(--danger);
+}
+
+.btn-unpair-danger {
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+  color: #F87171;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.btn-unpair-danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #EF4444;
 }
 
 /* --------------------------------------------------------------------------

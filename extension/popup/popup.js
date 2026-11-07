@@ -1,29 +1,30 @@
 // popup.js - Lockstep Prismatic Studio UI Controller
 
 const INVITE_BASE_URL = 'https://jef1056.github.io/lockstep/';
+const STORAGE_DISPLAY_NAME_KEY = 'lockstep_display_name';
 
-// DOM Elements
+// Top-level Pre-fill: hydrate display name before first render
+const inputDisplayName = document.getElementById('input-display-name');
+const prefilledName = (localStorage.getItem(STORAGE_DISPLAY_NAME_KEY) || '').trim().slice(0, 24);
+if (inputDisplayName && prefilledName) {
+  inputDisplayName.value = prefilledName;
+}
+
+// Top-level DOM Elements
 const updateBanner = document.getElementById('update-banner');
 const updateVersionText = document.getElementById('update-version-text');
 const updateDownloadLink = document.getElementById('update-download-link');
 const btnUpdateReload = document.getElementById('btn-update-reload');
 
-// Identity Strip & Banners
-const inputDisplayName = document.getElementById('input-display-name');
-const kickedBanner = document.getElementById('kicked-banner');
-const btnDismissKicked = document.getElementById('btn-dismiss-kicked');
-
-const chipIdle = document.getElementById('chip-idle');
-const chipStandby = document.getElementById('chip-standby');
-const chipSyncing = document.getElementById('chip-syncing');
-const standbyHeaderDot = document.getElementById('standby-header-dot');
-const standbyHeaderText = document.getElementById('standby-header-text');
-
+// Views
 const viewUnpaired = document.getElementById('view-unpaired');
 const viewPairedIdle = document.getElementById('view-paired-idle');
 const viewSyncing = document.getElementById('view-syncing');
 
 // 1A Elements
+const kickedBanner = document.getElementById('kicked-banner');
+const btnDismissKicked = document.getElementById('btn-dismiss-kicked');
+const tabGateHint = document.getElementById('tab-gate-hint');
 const btnUnpairedPick = document.getElementById('btn-unpaired-pick');
 const detailsPairKey = document.getElementById('details-pair-key');
 const formConnect = document.getElementById('form-connect');
@@ -33,43 +34,38 @@ const btnConnect = document.getElementById('btn-connect');
 // 1B Elements
 const idleStatusDot = document.getElementById('idle-status-dot');
 const idleStatusText = document.getElementById('idle-status-text');
+const btnCopyInvite = document.getElementById('btn-copy-invite');
 const idleKeyValue = document.getElementById('idle-key-value');
+const iconCopy = document.getElementById('icon-copy');
+const tabGateHintIdle = document.getElementById('tab-gate-hint-idle');
 const rosterIdle = document.getElementById('roster-idle');
 const btnPairedPick = document.getElementById('btn-paired-pick');
-const btnCopyInvite = document.getElementById('btn-copy-invite');
-const copyBtnText = document.getElementById('copy-btn-text');
-const badgeCopied = document.getElementById('badge-copied');
+const btnPickSpecific = document.getElementById('btn-pick-specific');
+const btnCopyInviteLink = document.getElementById('btn-copy-invite-link');
 const btnUnpairIdle = document.getElementById('btn-unpair-idle');
 
 // 1C Elements
+const syncStatusDot = document.getElementById('sync-status-dot');
 const syncDomain = document.getElementById('sync-domain');
 const syncPing = document.getElementById('sync-ping');
-const syncStatusDot = document.getElementById('sync-status-dot');
-const syncStatusText = document.getElementById('sync-status-text');
+const btnResync = document.getElementById('btn-resync');
+const syncContextBar = document.getElementById('sync-context-bar');
+const btnFocusTab = document.getElementById('btn-focus-tab');
+const btnSwitchTab = document.getElementById('btn-switch-tab');
+const btnFocusVideo = document.getElementById('btn-focus-video');
 const syncMutedWarning = document.getElementById('sync-muted-warning');
 const rosterSync = document.getElementById('roster-sync');
-const btnEndSession = document.getElementById('btn-end-session');
-const endSessionBtnText = document.getElementById('end-session-btn-text');
-const btnResync = document.getElementById('btn-resync');
-const resyncBtnText = document.getElementById('resync-btn-text');
-const btnUnpairSync = document.getElementById('btn-unpair-sync');
-const syncChipDot = document.getElementById('sync-chip-dot');
-const syncChipText = document.getElementById('sync-chip-text');
-const syncFooterHint = document.getElementById('sync-footer-hint');
 const btnCopySyncInvite = document.getElementById('btn-copy-sync-invite');
-const copySyncBtnText = document.getElementById('copy-sync-btn-text');
+const btnEndSession = document.getElementById('btn-end-session');
+const btnUnpairSync = document.getElementById('btn-unpair-sync');
 
 let currentStatus = null;
 let copyTimeout = null;
+let copyLinkTimeout = null;
 let copySyncTimeout = null;
-let copySyncFeedbackActive = false;
-let armedTabId = null;
 let displayNameDebounceTimer = null;
 let kickedNoticeDismissed = false;
-
-function isSupportedUrl(url) {
-  return typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'));
-}
+let lastOverriddenViewerName = null;
 
 // Send message to background service worker
 function sendSw(message) {
@@ -88,8 +84,9 @@ function sendSw(message) {
   });
 }
 
-// Copy text to clipboard with fallback
+// Copy text to clipboard with DOM fallback
 async function copyText(text) {
+  if (!text) return false;
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -106,30 +103,50 @@ async function copyText(text) {
   }
 }
 
-// Show visual feedback on copy invite button
-function showCopiedFeedback() {
-  if (copyTimeout) clearTimeout(copyTimeout);
-  if (badgeCopied) badgeCopied.classList.remove('hidden');
-  if (copyBtnText) copyBtnText.textContent = 'Copied!';
-  copyTimeout = setTimeout(() => {
-    if (badgeCopied) badgeCopied.classList.add('hidden');
-    if (copyBtnText) copyBtnText.textContent = 'Copy';
-    copyTimeout = null;
-  }, 1500);
-}
-
-// Extract clean hostname for syncing domain label
-function extractDomain(activeSession) {
-  if (!activeSession) return 'Unknown video';
-  if (activeSession.domain) return activeSession.domain;
-  if (activeSession.pageUrl) {
+// Format short session URL: strip www. from hostname + short path
+function formatShortSessionUrl(activeSession) {
+  if (!activeSession) return 'Active video';
+  if (activeSession.domain) {
+    return activeSession.domain.replace(/^www\./i, '');
+  }
+  const rawUrl = activeSession.pageUrl || '';
+  if (rawUrl) {
     try {
-      return new URL(activeSession.pageUrl).hostname;
+      const parsed = new URL(rawUrl);
+      const host = parsed.hostname.replace(/^www\./i, '');
+      const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
+      const full = host + path;
+      return full.length > 28 ? full.slice(0, 26) + '...' : full;
     } catch {
-      return activeSession.pageUrl;
+      return rawUrl.length > 28 ? rawUrl.slice(0, 26) + '...' : rawUrl;
     }
   }
   return 'Active video';
+}
+
+// Synchronously persist display name to localStorage and storage.local, optionally flushing to SW
+function persistDisplayName(val, flushSw = false) {
+  const trimmed = typeof val === 'string' ? val.trim().slice(0, 24) : '';
+  if (trimmed) {
+    try {
+      localStorage.setItem(STORAGE_DISPLAY_NAME_KEY, trimmed);
+    } catch (_) {}
+    try {
+      chrome.storage?.local?.set?.({ displayName: trimmed, customDisplayName: trimmed });
+    } catch (_) {}
+  }
+  if (currentStatus && trimmed) {
+    currentStatus.displayName = trimmed;
+  }
+  if (flushSw) {
+    if (displayNameDebounceTimer) {
+      clearTimeout(displayNameDebounceTimer);
+      displayNameDebounceTimer = null;
+    }
+    if (trimmed) {
+      sendSw({ target: 'sw', type: 'SET_DISPLAY_NAME', displayName: trimmed });
+    }
+  }
 }
 
 // Query service worker status, fallback to storage
@@ -143,13 +160,14 @@ async function fetchStatus() {
       peerCount: typeof res.peerCount === 'number' ? res.peerCount : (Array.isArray(res.peers) ? res.peers.length : (res.peerOnline ? 1 : 0)),
       isRoomOwner: Boolean(res.isRoomOwner),
       canKick: Boolean(res.canKick),
-      kickedNotice: Boolean(res.kickedNotice)
+      kickedNotice: Boolean(res.kickedNotice),
+      currentTab: res.currentTab || null
     };
   }
 
   // Storage fallback
   try {
-    const local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo', 'displayName']);
+    const local = await chrome.storage.local.get(['pairKey', 'peerId', 'updateInfo', 'displayName', 'customDisplayName']);
     const session = chrome.storage.session
       ? await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted', 'peers', 'peerCount', 'isRoomOwner', 'canKick', 'kickedNotice'])
       : {};
@@ -171,12 +189,13 @@ async function fetchStatus() {
       autoplayMuted: session.autoplayMuted || false,
       updateInfo: local.updateInfo || null,
       inviteUrl,
-      displayName: local.displayName || '',
+      displayName: local.customDisplayName || local.displayName || '',
       peers,
       peerCount,
       isRoomOwner: Boolean(session.isRoomOwner),
       canKick: Boolean(session.canKick),
-      kickedNotice: Boolean(session.kickedNotice)
+      kickedNotice: Boolean(session.kickedNotice),
+      currentTab: null
     };
   } catch {
     return {
@@ -192,52 +211,28 @@ async function fetchStatus() {
       peerCount: 0,
       isRoomOwner: false,
       canKick: false,
-      kickedNotice: false
+      kickedNotice: false,
+      currentTab: null
     };
   }
 }
 
-// Render multi-person session roster into container
-function renderRoster(container, status, isSyncing) {
+// Render multi-person session roster: peer-only (your name lives in header)
+function renderRoster(container, status) {
   if (!container) return;
-  container.replaceChildren();
-
   const peers = Array.isArray(status.peers) ? status.peers : [];
-  const totalInRoom = peers.length + 1;
+  if (peers.length === 0) {
+    container.classList.add('hidden');
+    container.replaceChildren();
+    return;
+  }
 
-  // Header micro-row: SESSION · <N> IN ROOM
-  const header = document.createElement('div');
-  header.className = 'roster-header';
-  header.textContent = `SESSION · ${totalInRoom} IN ROOM`;
-  container.appendChild(header);
+  container.classList.remove('hidden');
+  container.replaceChildren();
 
   const list = document.createElement('div');
   list.className = 'roster-list';
 
-  // Self row: emerald/cyan dot + <displayName> (You) + HOST badge if activeSession?.isHost || (!activeSession && status.isRoomOwner)
-  const selfRow = document.createElement('div');
-  selfRow.className = 'roster-row';
-
-  const selfDot = document.createElement('span');
-  selfDot.className = isSyncing ? 'status-dot dot-cyan' : 'status-dot dot-emerald';
-  selfRow.appendChild(selfDot);
-
-  const selfName = document.createElement('span');
-  selfName.className = 'roster-name self';
-  const rawDisplayName = typeof status.displayName === 'string' ? status.displayName.trim() : '';
-  selfName.textContent = rawDisplayName ? `${rawDisplayName} (You)` : 'You';
-  selfRow.appendChild(selfName);
-
-  const isHost = Boolean(status.activeSession?.isHost || (!status.activeSession && status.isRoomOwner));
-  if (isHost) {
-    const hostBadge = document.createElement('span');
-    hostBadge.className = 'badge-host';
-    hostBadge.textContent = 'HOST';
-    selfRow.appendChild(hostBadge);
-  }
-  list.appendChild(selfRow);
-
-  // Peer rows: emerald dot + peer.name || ('Peer ' + String(peer.peerId).slice(0, 4)) + HOST badge if peer.isHost + monospace ${peer.rttMs ?? '…'}ms + (when status.canKick is true) compact red .btn-kick-peer button
   for (const peer of peers) {
     const peerRow = document.createElement('div');
     peerRow.className = 'roster-row';
@@ -261,16 +256,16 @@ function renderRoster(container, status, isSyncing) {
 
     const latency = document.createElement('span');
     latency.className = 'roster-latency';
-    latency.textContent = `${peer.rttMs ?? '…'}ms`;
+    latency.textContent = `${peer.rttMs ?? '-'}ms`;
     peerRow.appendChild(latency);
 
     if (status.canKick && peer.peerId) {
       const btnKick = document.createElement('button');
       btnKick.type = 'button';
-      btnKick.className = 'btn-kick-peer';
-      btnKick.textContent = 'Kick';
-      btnKick.title = 'Remove from session';
-      btnKick.setAttribute('aria-label', `Kick ${rawPeerName || peer.peerId}`);
+      btnKick.className = 'btn-remove-peer';
+      btnKick.textContent = 'Remove';
+      btnKick.title = 'Remove peer from session';
+      btnKick.setAttribute('aria-label', `Remove ${rawPeerName || peer.peerId}`);
       btnKick.addEventListener('click', async (e) => {
         e.stopPropagation();
         btnKick.disabled = true;
@@ -299,9 +294,22 @@ async function render() {
   const isMuted = Boolean(currentStatus.autoplayMuted || activeSession?.autoplayMuted || activeSession?.isMuted);
   const updateInfo = currentStatus.updateInfo;
 
-  // Populate self-identification strip when not focused
+  // Override auto-generated Viewer name if localStorage holds a custom saved name
+  const savedCustomName = (localStorage.getItem(STORAGE_DISPLAY_NAME_KEY) || '').trim().slice(0, 24);
+  if (savedCustomName) {
+    const swName = (currentStatus.displayName || '').trim();
+    if (!swName || /^Viewer \d+$/.test(swName)) {
+      if (lastOverriddenViewerName !== swName) {
+        lastOverriddenViewerName = swName;
+        currentStatus.displayName = savedCustomName;
+        persistDisplayName(savedCustomName, true);
+      }
+    }
+  }
+
+  // Populate header name pill when not actively being edited
   if (inputDisplayName && document.activeElement !== inputDisplayName) {
-    inputDisplayName.value = currentStatus.displayName || '';
+    inputDisplayName.value = currentStatus.displayName || savedCustomName || '';
   }
 
   // Toggle update banner
@@ -327,6 +335,7 @@ async function render() {
   if (pairKey) {
     kickedNoticeDismissed = false;
   }
+
   // Toggle kicked banner in 1A
   if (kickedBanner) {
     if (isUnpaired && currentStatus.kickedNotice && !kickedNoticeDismissed) {
@@ -341,165 +350,222 @@ async function render() {
   viewPairedIdle.classList.toggle('hidden', !isPairedIdle);
   viewSyncing.classList.toggle('hidden', !isSyncing);
 
-  // Update Header Status Chip
+  // State 1A: Unpaired
   if (isUnpaired) {
-    chipIdle.classList.remove('hidden');
-    chipStandby.classList.add('hidden');
-    chipSyncing.classList.add('hidden');
-  } else if (isPairedIdle) {
-    chipIdle.classList.add('hidden');
-    chipStandby.classList.remove('hidden');
-    chipSyncing.classList.add('hidden');
-
-    if (peerOnline || peerCount > 0) {
-      standbyHeaderDot.className = 'status-dot dot-emerald';
-      standbyHeaderText.textContent = `${rttMs ?? 0}ms`;
-    } else {
-      standbyHeaderDot.className = 'status-dot dot-muted';
-      standbyHeaderText.textContent = 'STANDBY';
+    const currentTab = currentStatus.currentTab;
+    const canSync = Boolean(!currentTab || currentTab.canSync);
+    if (tabGateHint) {
+      tabGateHint.classList.toggle('hidden', canSync);
     }
-  } else if (isSyncing) {
-    chipIdle.classList.add('hidden');
-    chipStandby.classList.add('hidden');
-    chipSyncing.classList.remove('hidden');
-  }
-
-  // Auto-enable video picking when popup is open in Standby
-  if (!isPairedIdle) {
-    armedTabId = null;
-  } else {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab?.id && tab.id !== armedTabId && isSupportedUrl(tab.url)) {
-        armedTabId = tab.id;
-        sendSw({ target: 'sw', type: 'ARM_STANDBY_PICKER', tabId: tab.id });
-      }
-    } catch {
-      // Ignore tab query errors in popup
+    if (btnUnpairedPick) {
+      btnUnpairedPick.disabled = !canSync;
     }
   }
 
-  // Populate 1B Paired Standby
+  // State 1B: Paired Standby
   if (isPairedIdle) {
-    idleKeyValue.textContent = pairKey;
+    if (idleKeyValue && (!copyTimeout || idleKeyValue.textContent !== 'Copied')) {
+      idleKeyValue.textContent = pairKey;
+    }
+
     if (peerCount === 0) {
       idleStatusDot.className = 'status-dot dot-muted';
-      idleStatusText.textContent = 'Waiting for peers…';
+      idleStatusText.textContent = 'Waiting for peers';
     } else if (peerCount === 1) {
       idleStatusDot.className = 'status-dot dot-emerald';
-      idleStatusText.textContent = '1 peer online';
+      idleStatusText.textContent = rttMs != null ? `1 peer · ${rttMs}ms` : '1 peer online';
     } else {
       idleStatusDot.className = 'status-dot dot-emerald';
-      idleStatusText.textContent = `${peerCount} peers online`;
+      idleStatusText.textContent = `${peerCount} peers · ${rttMs ?? 0}ms`;
     }
-    renderRoster(rosterIdle, currentStatus, false);
+
+    const currentTab = currentStatus.currentTab;
+    const canSync = Boolean(!currentTab || currentTab.canSync);
+    if (tabGateHintIdle) {
+      tabGateHintIdle.classList.toggle('hidden', canSync);
+    }
+    if (btnPairedPick) {
+      btnPairedPick.disabled = !canSync;
+    }
+
+    renderRoster(rosterIdle, currentStatus);
   }
 
-  // Populate 1C Active Sync
+  // State 1C: Active Sync
   if (isSyncing) {
-    syncDomain.textContent = extractDomain(activeSession);
+    if (syncDomain) {
+      syncDomain.textContent = formatShortSessionUrl(activeSession);
+    }
 
     if (peerOnline || peerCount > 0) {
-      chipSyncing.classList.remove('waiting');
-      if (syncChipDot) syncChipDot.className = 'status-dot dot-cyan animate-pulse';
-      if (syncChipText) syncChipText.textContent = 'LOCKED';
+      syncStatusDot.className = 'status-dot dot-emerald animate-pulse';
       syncPing.textContent = `${rttMs ?? 0}ms`;
-      syncStatusDot.className = 'status-dot dot-emerald';
-      syncStatusText.textContent = 'p2p locked · buffer match';
-      if (syncFooterHint) syncFooterHint.textContent = `${peerCount + 1} browsers synced`;
+    } else {
+      syncStatusDot.className = 'status-dot dot-amber animate-pulse';
+      syncPing.textContent = 'Waiting';
+    }
 
-      btnEndSession.className = 'btn btn-destructive flex-1';
-      btnEndSession.style.order = '1';
+    // Context bar for tab navigation
+    const currentTab = currentStatus.currentTab;
+    if (syncContextBar) {
+      if (currentTab && !currentTab.isSyncedTab) {
+        syncContextBar.classList.remove('hidden');
+        if (btnFocusTab) btnFocusTab.classList.remove('hidden');
+        if (btnFocusVideo) btnFocusVideo.classList.add('hidden');
+        if (btnSwitchTab) {
+          btnSwitchTab.classList.toggle('hidden', !currentTab.canSync);
+        }
+      } else if (currentTab && currentTab.isSyncedTab) {
+        syncContextBar.classList.remove('hidden');
+        if (btnFocusTab) btnFocusTab.classList.add('hidden');
+        if (btnSwitchTab) btnSwitchTab.classList.add('hidden');
+        if (btnFocusVideo) btnFocusVideo.classList.remove('hidden');
+      } else {
+        syncContextBar.classList.add('hidden');
+      }
+    }
+
+    if (syncMutedWarning) {
+      syncMutedWarning.classList.toggle('hidden', !isMuted);
+    }
+
+    if (btnEndSession) {
       const isLeave = Boolean(peerCount >= 2 && !activeSession?.isHost);
-      if (endSessionBtnText) endSessionBtnText.textContent = isLeave ? 'Leave' : 'End Session';
-
-      btnResync.classList.remove('hidden');
-      btnResync.style.order = '2';
-
-      btnCopySyncInvite.className = 'btn btn-secondary btn-icon-label';
-      btnCopySyncInvite.style.order = '3';
-      if (!copySyncFeedbackActive && copySyncBtnText) {
-        copySyncBtnText.textContent = 'Copy';
-      }
-    } else {
-      chipSyncing.classList.add('waiting');
-      if (syncChipDot) syncChipDot.className = 'status-dot dot-amber animate-pulse';
-      if (syncChipText) syncChipText.textContent = 'WAITING';
-      syncPing.textContent = 'Invite ready';
-      syncStatusDot.className = 'status-dot dot-amber';
-      syncStatusText.textContent = 'Waiting for partner to join…';
-      if (syncFooterHint) syncFooterHint.textContent = 'Share invite link to connect';
-
-      btnCopySyncInvite.className = 'btn btn-primary flex-1';
-      btnCopySyncInvite.style.order = '1';
-      if (!copySyncFeedbackActive && copySyncBtnText) {
-        copySyncBtnText.textContent = 'Copy Invite Link';
-      }
-
-      btnEndSession.className = 'btn btn-destructive btn-icon-label';
-      btnEndSession.style.order = '2';
-      if (endSessionBtnText) endSessionBtnText.textContent = 'End';
-
-      btnResync.classList.add('hidden');
-      btnResync.style.order = '3';
+      btnEndSession.textContent = isLeave ? 'Leave' : 'Stop Sync';
     }
 
-    if (isMuted) {
-      syncMutedWarning.classList.remove('hidden');
-    } else {
-      syncMutedWarning.classList.add('hidden');
-    }
-
-    renderRoster(rosterSync, currentStatus, true);
+    renderRoster(rosterSync, currentStatus);
   }
 }
 
 // Handlers
+function showKeyPillCopiedFeedback() {
+  if (copyTimeout) clearTimeout(copyTimeout);
+  if (idleKeyValue) idleKeyValue.textContent = 'Copied';
+  if (iconCopy) iconCopy.classList.add('hidden');
+  copyTimeout = setTimeout(() => {
+    if (idleKeyValue && currentStatus?.pairKey) {
+      idleKeyValue.textContent = currentStatus.pairKey;
+    }
+    if (iconCopy) iconCopy.classList.remove('hidden');
+    copyTimeout = null;
+  }, 1200);
+}
+
+function showCopyLinkFeedback() {
+  if (copyLinkTimeout) clearTimeout(copyLinkTimeout);
+  if (btnCopyInviteLink) btnCopyInviteLink.textContent = 'Copied!';
+  copyLinkTimeout = setTimeout(() => {
+    if (btnCopyInviteLink) btnCopyInviteLink.textContent = 'Copy Invite';
+    copyLinkTimeout = null;
+  }, 1200);
+}
+
 function showSyncCopiedFeedback() {
   if (copySyncTimeout) clearTimeout(copySyncTimeout);
-  copySyncFeedbackActive = true;
-  if (copySyncBtnText) copySyncBtnText.textContent = 'Copied!';
+  if (btnCopySyncInvite) btnCopySyncInvite.textContent = 'Copied!';
   copySyncTimeout = setTimeout(() => {
-    copySyncFeedbackActive = false;
+    if (btnCopySyncInvite) btnCopySyncInvite.textContent = 'Copy Invite';
     copySyncTimeout = null;
-    if (copySyncBtnText) {
-      copySyncBtnText.textContent = currentStatus?.peerOnline ? 'Copy' : 'Copy Invite Link';
-    }
-  }, 1500);
+  }, 1200);
+}
+
+function buildCurrentInviteUrl() {
+  if (currentStatus?.inviteUrl) return currentStatus.inviteUrl;
+  if (!currentStatus?.pairKey) return null;
+  const hashParts = [`pair=${encodeURIComponent(currentStatus.pairKey)}`];
+  if (currentStatus.activeSession?.pageUrl) {
+    hashParts.push(`url=${encodeURIComponent(currentStatus.activeSession.pageUrl)}`);
+  }
+  return `${INVITE_BASE_URL}#${hashParts.join('&')}`;
+}
+
+async function handleCopyKeyPill() {
+  const url = buildCurrentInviteUrl() || currentStatus?.pairKey;
+  if (!url) return;
+  const ok = await copyText(url);
+  if (ok) {
+    showKeyPillCopiedFeedback();
+  }
+}
+
+async function handleCopyInviteLink() {
+  const url = buildCurrentInviteUrl();
+  if (!url) return;
+  const ok = await copyText(url);
+  if (ok) {
+    showCopyLinkFeedback();
+  }
 }
 
 async function handleCopySyncInvite() {
-  const inviteUrl = currentStatus?.inviteUrl || (currentStatus?.pairKey
-    ? `${INVITE_BASE_URL}#pair=${encodeURIComponent(currentStatus.pairKey)}`
-    : null);
-  if (!inviteUrl) return;
-  const ok = await copyText(inviteUrl);
+  const url = buildCurrentInviteUrl();
+  if (!url) return;
+  const ok = await copyText(url);
   if (ok) {
     showSyncCopiedFeedback();
   }
 }
 
-async function handlePairedPick() {
+async function triggerTabSync(tabId) {
+  let res = await sendSw({ target: 'sw', type: 'SYNC_CURRENT_TAB', tabId });
+  if (!res || res.ok === false) {
+    res = await sendSw({ target: 'sw', type: 'START_PICK_FLOW', tabId });
+  }
+  if (res?.inviteUrl) {
+    await copyText(res.inviteUrl);
+  }
+}
+
+async function handleUnpairedPick() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id && isSupportedUrl(tab.url)) {
-      await sendSw({ target: 'sw', type: 'ARM_STANDBY_PICKER', tabId: tab.id });
+    if (tab?.id) {
+      await triggerTabSync(tab.id);
     }
   } finally {
     window.close();
   }
 }
 
-async function handlePickVideo() {
+async function handlePairedPick() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.id) {
-      window.close();
-      return;
+    if (tab?.id) {
+      await triggerTabSync(tab.id);
     }
-    const res = await sendSw({ target: 'sw', type: 'START_PICK_FLOW', tabId: tab.id });
-    if (res?.inviteUrl) {
-      await copyText(res.inviteUrl);
+  } finally {
+    window.close();
+  }
+}
+
+async function handlePickSpecific() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      const res = await sendSw({ target: 'sw', type: 'START_PICK_FLOW', tabId: tab.id });
+      if (res?.inviteUrl) {
+        await copyText(res.inviteUrl);
+      }
+    }
+  } finally {
+    window.close();
+  }
+}
+
+async function handleFocusTab() {
+  try {
+    await sendSw({ target: 'sw', type: 'FOCUS_SYNCED_TAB' });
+  } finally {
+    window.close();
+  }
+}
+
+async function handleSwitchTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      await sendSw({ target: 'sw', type: 'SYNC_CURRENT_TAB', tabId: tab.id });
     }
   } finally {
     window.close();
@@ -524,17 +590,7 @@ async function handleConnect(e) {
   }
 }
 
-async function handleCopyInvite() {
-  if (!currentStatus?.pairKey) return;
-  const inviteUrl = `${INVITE_BASE_URL}#pair=${encodeURIComponent(currentStatus.pairKey)}`;
-  const ok = await copyText(inviteUrl);
-  if (ok) {
-    showCopiedFeedback();
-  }
-}
-
 async function handleUnpair() {
-  // Optimistic instant reset to 1A
   currentStatus = {
     pairKey: null,
     peerOnline: false,
@@ -548,30 +604,15 @@ async function handleUnpair() {
     peerCount: 0,
     isRoomOwner: false,
     canKick: false,
-    kickedNotice: false
+    kickedNotice: false,
+    currentTab: currentStatus?.currentTab || null
   };
   viewUnpaired.classList.remove('hidden');
   viewPairedIdle.classList.add('hidden');
   viewSyncing.classList.add('hidden');
-  chipIdle.classList.remove('hidden');
-  chipStandby.classList.add('hidden');
-  chipSyncing.classList.add('hidden');
 
   await sendSw({ target: 'sw', type: 'UNPAIR' });
   await render();
-}
-
-// Display Name Debounced Saving
-function saveDisplayName(val) {
-  if (displayNameDebounceTimer) {
-    clearTimeout(displayNameDebounceTimer);
-    displayNameDebounceTimer = null;
-  }
-  const displayName = typeof val === 'string' ? val.trim() : '';
-  if (currentStatus) {
-    currentStatus.displayName = displayName;
-  }
-  sendSw({ target: 'sw', type: 'SET_DISPLAY_NAME', displayName });
 }
 
 async function handleEndSession() {
@@ -586,41 +627,54 @@ async function handleEndSession() {
 
 async function handleResync() {
   btnResync.disabled = true;
-  const origText = resyncBtnText.textContent;
-  resyncBtnText.textContent = 'Resyncing…';
   try {
     await sendSw({ target: 'sw', type: 'RESYNC_NOW' });
   } finally {
     setTimeout(() => {
       btnResync.disabled = false;
-      resyncBtnText.textContent = origText;
     }, 600);
     await render();
   }
 }
 
-// Wire Event Listeners
+// Display Name Event Listeners
 if (inputDisplayName) {
   inputDisplayName.addEventListener('input', () => {
+    persistDisplayName(inputDisplayName.value, false);
     if (displayNameDebounceTimer) clearTimeout(displayNameDebounceTimer);
     displayNameDebounceTimer = setTimeout(() => {
-      saveDisplayName(inputDisplayName.value);
-    }, 350);
+      persistDisplayName(inputDisplayName.value, true);
+    }, 250);
+  });
+
+  inputDisplayName.addEventListener('change', () => {
+    persistDisplayName(inputDisplayName.value, true);
+  });
+
+  inputDisplayName.addEventListener('blur', () => {
+    persistDisplayName(inputDisplayName.value, true);
   });
 
   inputDisplayName.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      saveDisplayName(inputDisplayName.value);
+      persistDisplayName(inputDisplayName.value, true);
       inputDisplayName.blur();
     }
   });
 
-  inputDisplayName.addEventListener('blur', () => {
-    saveDisplayName(inputDisplayName.value);
+  inputDisplayName.addEventListener('pagehide', () => {
+    persistDisplayName(inputDisplayName.value, true);
   });
 }
 
+window.addEventListener('pagehide', () => {
+  if (inputDisplayName) {
+    persistDisplayName(inputDisplayName.value, true);
+  }
+});
+
+// Banner / Modal Event Listeners
 if (btnDismissKicked) {
   btnDismissKicked.addEventListener('click', async () => {
     kickedNoticeDismissed = true;
@@ -629,15 +683,6 @@ if (btnDismissKicked) {
   });
 }
 
-btnUnpairedPick.addEventListener('click', handlePickVideo);
-formConnect.addEventListener('submit', handleConnect);
-btnPairedPick.addEventListener('click', handlePairedPick);
-btnCopyInvite.addEventListener('click', handleCopyInvite);
-btnUnpairIdle.addEventListener('click', handleUnpair);
-btnEndSession.addEventListener('click', handleEndSession);
-btnResync.addEventListener('click', handleResync);
-btnUnpairSync.addEventListener('click', handleUnpair);
-btnCopySyncInvite.addEventListener('click', handleCopySyncInvite);
 if (btnUpdateReload) {
   btnUpdateReload.addEventListener('click', async () => {
     btnUpdateReload.disabled = true;
@@ -645,6 +690,23 @@ if (btnUpdateReload) {
     window.close();
   });
 }
+
+// Action Button Event Listeners
+if (btnUnpairedPick) btnUnpairedPick.addEventListener('click', handleUnpairedPick);
+if (formConnect) formConnect.addEventListener('submit', handleConnect);
+if (btnCopyInvite) btnCopyInvite.addEventListener('click', handleCopyKeyPill);
+if (btnPairedPick) btnPairedPick.addEventListener('click', handlePairedPick);
+if (btnPickSpecific) btnPickSpecific.addEventListener('click', handlePickSpecific);
+if (btnCopyInviteLink) btnCopyInviteLink.addEventListener('click', handleCopyInviteLink);
+if (btnUnpairIdle) btnUnpairIdle.addEventListener('click', handleUnpair);
+
+if (btnResync) btnResync.addEventListener('click', handleResync);
+if (btnFocusTab) btnFocusTab.addEventListener('click', handleFocusTab);
+if (btnSwitchTab) btnSwitchTab.addEventListener('click', handleSwitchTab);
+if (btnFocusVideo) btnFocusVideo.addEventListener('click', handleFocusTab);
+if (btnCopySyncInvite) btnCopySyncInvite.addEventListener('click', handleCopySyncInvite);
+if (btnEndSession) btnEndSession.addEventListener('click', handleEndSession);
+if (btnUnpairSync) btnUnpairSync.addEventListener('click', handleUnpair);
 
 // Listen for storage changes
 if (chrome.storage?.onChanged) {

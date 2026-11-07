@@ -1644,3 +1644,439 @@ describe('content.js - Sync Lifecycle & Autoplay Muted Fallback', () => {
     assert.equal(facadeClicked, false, 'Already playing video must never receive facade clicks');
   });
 });
+
+describe('content.js - Site-Agnostic Preview Guard, Locked-Tab Engage & Autoplay Hold', () => {
+  let sandbox;
+  let mockWindow;
+  let mockDoc;
+  let mockChrome;
+  let docListeners;
+  let windowListeners;
+  let sentMessages;
+  let dispatchedWindowEvents;
+  let storedData;
+
+  function createMockVideo(opts = {}) {
+    let paused = opts.paused !== undefined ? opts.paused : true;
+    let currentTime = opts.currentTime || 0;
+    const v = {
+      tagName: 'VIDEO',
+      nodeType: 1,
+      isConnected: opts.isConnected !== undefined ? opts.isConnected : true,
+      paused,
+      currentTime,
+      playbackRate: 1,
+      duration: opts.duration !== undefined ? opts.duration : 120,
+      videoWidth: opts.videoWidth !== undefined ? opts.videoWidth : 640,
+      videoHeight: opts.videoHeight !== undefined ? opts.videoHeight : 360,
+      muted: Boolean(opts.muted),
+      loop: Boolean(opts.loop),
+      controls: Boolean(opts.controls),
+      readyState: opts.readyState !== undefined ? opts.readyState : 4,
+      style: {},
+      id: opts.id || '',
+      className: opts.className || '',
+      parentElement: opts.parentElement || null,
+      parentNode: opts.parentNode || opts.parentElement || null,
+      getRootNode: () => mockDoc,
+      _listeners: {},
+      addEventListener(type, fn) {
+        if (!this._listeners[type]) this._listeners[type] = [];
+        this._listeners[type].push(fn);
+      },
+      removeEventListener(type, fn) {
+        if (this._listeners[type]) {
+          this._listeners[type] = this._listeners[type].filter(f => f !== fn);
+        }
+      },
+      play: async function () {
+        this.paused = false;
+        if (this._listeners['play']) {
+          for (const f of this._listeners['play']) f();
+        }
+      },
+      pause: function () {
+        this.paused = true;
+        if (this._listeners['pause']) {
+          for (const f of this._listeners['pause']) f();
+        }
+      },
+      scrollIntoView: function (options) {
+        this._scrolledIntoView = options || true;
+      },
+      getBoundingClientRect: opts.getBoundingClientRect || (() => ({
+        left: 0,
+        top: 0,
+        right: 640,
+        bottom: 360,
+        width: 640,
+        height: 360
+      }))
+    };
+    return v;
+  }
+
+  function setupTestEnv(initialStorage = {}) {
+    docListeners = {};
+    windowListeners = {};
+    sentMessages = [];
+    dispatchedWindowEvents = [];
+    storedData = { ...initialStorage };
+
+    mockWindow = {
+      innerWidth: 1024,
+      innerHeight: 768,
+      addEventListener: (type, fn, opts) => {
+        if (!windowListeners[type]) windowListeners[type] = [];
+        windowListeners[type].push({ fn, opts });
+      },
+      removeEventListener: (type, fn) => {
+        if (windowListeners[type]) {
+          windowListeners[type] = windowListeners[type].filter(item => item.fn !== fn);
+        }
+      },
+      dispatchEvent: (evt) => {
+        dispatchedWindowEvents.push(evt);
+        const list = windowListeners[evt.type] || [];
+        for (const item of list) item.fn(evt);
+        return true;
+      },
+      location: {
+        origin: 'https://example.com',
+        pathname: '/watch',
+        search: '?v=12345',
+        href: 'https://example.com/watch?v=12345'
+      },
+      navigator: {}
+    };
+    mockWindow.top = mockWindow;
+    mockWindow.window = mockWindow;
+
+    mockDoc = {
+      readyState: 'complete',
+      addEventListener: (type, fn, opts) => {
+        if (!docListeners[type]) docListeners[type] = [];
+        docListeners[type].push({ fn, opts });
+      },
+      removeEventListener: (type, fn) => {
+        if (docListeners[type]) {
+          docListeners[type] = docListeners[type].filter(item => item.fn !== fn);
+        }
+      },
+      dispatchEvent: (evt) => {
+        const list = docListeners[evt.type] || [];
+        for (const item of list) item.fn(evt);
+        return true;
+      },
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      elementsFromPoint: () => []
+    };
+
+    mockChrome = {
+      runtime: {
+        getURL: (p) => path.join(ROOT_DIR, 'extension', p),
+        sendMessage: async (msg) => {
+          sentMessages.push(msg);
+          return { ok: true };
+        },
+        onMessage: {
+          _listeners: [],
+          addListener: (fn) => { mockChrome.runtime.onMessage._listeners.push(fn); }
+        }
+      },
+      storage: {
+        local: {
+          get: (keys, cb) => {
+            const res = {};
+            const keyArr = Array.isArray(keys) ? keys : [keys];
+            for (const k of keyArr) {
+              if (k in storedData) res[k] = storedData[k];
+            }
+            if (typeof cb === 'function') cb(res);
+            return Promise.resolve(res);
+          },
+          set: (obj, cb) => {
+            Object.assign(storedData, obj);
+            if (typeof cb === 'function') cb();
+            return Promise.resolve();
+          }
+        },
+        onChanged: {
+          _listeners: [],
+          addListener: (fn) => { mockChrome.storage.onChanged._listeners.push(fn); }
+        }
+      },
+      dom: {
+        openOrClosedShadowRoot: () => null
+      }
+    };
+
+    sandbox = {
+      window: mockWindow,
+      navigator: mockWindow.navigator,
+      document: mockDoc,
+      chrome: mockChrome,
+      __createSyncEngine: createSyncEngine,
+      MutationObserver: class {
+        observe() {}
+        disconnect() {}
+      },
+      CustomEvent,
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+      WeakSet,
+      URL,
+      console
+    };
+    sandbox.globalThis = sandbox;
+
+    const code = fs.readFileSync(CONTENT_PATH, 'utf-8');
+    vm.runInNewContext(code, sandbox);
+  }
+
+  afterEach(() => {
+    const onMessage = mockChrome?.runtime?.onMessage?._listeners?.[0];
+    if (onMessage) {
+      try {
+        onMessage({ type: 'DETACH_SYNC' }, {}, () => {});
+      } catch {}
+    }
+    try {
+      mockWindow?.__lockstepTeardown?.();
+    } catch {}
+  });
+
+  test('getBestVideo() returns null when all candidate videos are 0x0', async () => {
+    setupTestEnv();
+    const zeroVideo = createMockVideo({
+      videoWidth: 0,
+      videoHeight: 0,
+      duration: 0,
+      paused: true,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 })
+    });
+    mockDoc.querySelectorAll = () => [zeroVideo];
+
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    let engageRes;
+    await new Promise(resolve => {
+      onMessage({ type: 'ENGAGE_TAB_SYNC', selfId: 'test-user' }, {}, (r) => {
+        engageRes = r;
+        resolve();
+      });
+    });
+
+    assert.equal(engageRes?.ok, false, 'getBestVideo() must return null for 0x0 video');
+    assert.equal(engageRes?.found, false);
+  });
+
+  test('rejects #inline-preview-player and <a href="/watch?v=other"> hover previews', async () => {
+    setupTestEnv();
+
+    const inlinePreview = createMockVideo({
+      id: 'inline-preview-player',
+      className: 'preview-player',
+      videoWidth: 640,
+      videoHeight: 360,
+      duration: 30
+    });
+
+    const anchorParent = {
+      tagName: 'A',
+      href: 'https://example.com/watch?v=another-video-999',
+      parentElement: null,
+      parentNode: null
+    };
+    const feedCardPreview = createMockVideo({
+      parentElement: anchorParent,
+      parentNode: anchorParent,
+      videoWidth: 640,
+      videoHeight: 360,
+      duration: 45
+    });
+
+    const primaryVideo = createMockVideo({
+      id: 'main-player',
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 300,
+      paused: false
+    });
+
+    mockDoc.querySelectorAll = () => [inlinePreview, feedCardPreview, primaryVideo];
+
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    let engageRes;
+    await new Promise(resolve => {
+      onMessage({ type: 'ENGAGE_TAB_SYNC', selfId: 'test-user' }, {}, (r) => {
+        engageRes = r;
+        resolve();
+      });
+    });
+
+    assert.equal(engageRes?.ok, true);
+    assert.equal(engageRes?.found, true);
+
+    const pickedMsg = sentMessages.find(m => m.type === 'VIDEO_PICKED');
+    assert.ok(pickedMsg, 'VIDEO_PICKED message should be sent');
+    assert.equal(pickedMsg.pageUrl, 'https://example.com/watch?v=12345');
+    assert.equal(pickedMsg.duration, 300, 'Primary video duration should match picked video');
+  });
+
+  test('prefers viewport-visible Reel video over off-screen preloaded Reel video', async () => {
+    setupTestEnv();
+
+    mockWindow.innerWidth = 800;
+    mockWindow.innerHeight = 1000;
+
+    const offScreenNextReel = createMockVideo({
+      id: 'offscreen-reel',
+      videoWidth: 720,
+      videoHeight: 1280,
+      duration: 60,
+      paused: true,
+      getBoundingClientRect: () => ({
+        left: 50,
+        top: 1500,
+        right: 750,
+        bottom: 2700,
+        width: 700,
+        height: 1200
+      })
+    });
+
+    const activeInViewportReel = createMockVideo({
+      id: 'active-reel',
+      videoWidth: 720,
+      videoHeight: 1280,
+      duration: 60,
+      paused: false,
+      getBoundingClientRect: () => ({
+        left: 50,
+        top: 50,
+        right: 750,
+        bottom: 950,
+        width: 700,
+        height: 900
+      })
+    });
+
+    mockDoc.querySelectorAll = () => [offScreenNextReel, activeInViewportReel];
+
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    let engageRes;
+    await new Promise(resolve => {
+      onMessage({ type: 'ENGAGE_TAB_SYNC', selfId: 'reel-user' }, {}, (r) => {
+        engageRes = r;
+        resolve();
+      });
+    });
+
+    assert.equal(engageRes?.ok, true);
+    assert.equal(engageRes?.found, true);
+    assert.ok(activeInViewportReel.getBoundingClientRect().top < 1000, 'Viewport reel must be selected');
+  });
+
+  test('handles ENGAGE_TAB_SYNC and REFOCUS_VIDEO messages cleanly', async () => {
+    setupTestEnv();
+
+    const video = createMockVideo({
+      videoWidth: 640,
+      videoHeight: 360,
+      duration: 180,
+      paused: true
+    });
+    mockDoc.querySelectorAll = () => [video];
+
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    let engageRes;
+    await new Promise(resolve => {
+      onMessage({ type: 'ENGAGE_TAB_SYNC', selfId: 'user-1' }, {}, (r) => {
+        engageRes = r;
+        resolve();
+      });
+    });
+    assert.equal(engageRes?.ok, true);
+    assert.equal(engageRes?.found, true);
+
+    let refocusRes;
+    onMessage({ type: 'REFOCUS_VIDEO' }, {}, (r) => {
+      refocusRes = r;
+    });
+    assert.equal(refocusRes?.ok, true);
+    assert.equal(video._scrolledIntoView?.behavior, 'smooth');
+    assert.equal(video._scrolledIntoView?.block, 'center');
+  });
+
+  test('preemptive autoplay hold triggers when paired and releases on ATTACH_SYNC', async () => {
+    setupTestEnv({ pairKey: 'npub-pair-key-xyz' });
+
+    // Allow promise tick for initPairKeyWatcher()
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    const video = createMockVideo({
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 200,
+      currentTime: 1.5,
+      paused: false
+    });
+    mockDoc.querySelectorAll = () => [video];
+
+    const playHandler = docListeners['play']?.[0]?.fn;
+    assert.ok(typeof playHandler === 'function', 'Capture play handler must be registered on document');
+
+    // Simulate play capture event on document
+    playHandler({ target: video });
+
+    assert.equal(video.paused, true, 'Video must be paused by preemptive autoplay hold');
+    assert.equal(video.currentTime, 0, 'Current time under 2s must be reset to 0');
+    const pauseCmd = dispatchedWindowEvents.find(e => e.type === '__lockstep_main' && e.detail?.action === 'pause');
+    assert.ok(pauseCmd, '__lockstep_main pause command must be dispatched');
+
+    // Send ATTACH_SYNC to release autoplay hold
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    await new Promise(resolve => {
+      onMessage({ type: 'ATTACH_SYNC', selfId: 'peer-a' }, {}, resolve);
+    });
+
+    // Unpause video and trigger play again
+    video.paused = false;
+    video.currentTime = 5.0;
+    playHandler({ target: video });
+
+    assert.equal(video.paused, false, 'Video must not be paused once sync attaches and hold is released');
+  });
+
+  test('preemptive autoplay hold releases on trusted user interaction', async () => {
+    setupTestEnv({ pairKey: 'npub-pair-key-xyz' });
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    const video = createMockVideo({
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 200,
+      currentTime: 1.5,
+      paused: false
+    });
+    mockDoc.querySelectorAll = () => [video];
+
+    const pointerHandler = docListeners['pointerdown']?.[0]?.fn;
+    const playHandler = docListeners['play']?.[0]?.fn;
+
+    assert.ok(typeof pointerHandler === 'function', 'Pointerdown handler must be registered on document');
+
+    // Simulate trusted pointerdown
+    pointerHandler({ type: 'pointerdown', isTrusted: true });
+
+    // Subsequent play event should NOT trigger hold
+    playHandler({ target: video });
+
+    assert.equal(video.paused, false, 'Trusted user gesture must release autoplay hold');
+  });
+});

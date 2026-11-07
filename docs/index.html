@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lockstep — Peer-to-Peer Video Sync</title>
+  <title>Lockstep - Peer-to-Peer Video Sync</title>
   <meta name="description" content="Zero-config, serverless peer-to-peer web video synchronization powered by WebRTC and Nostr.">
   <link rel="stylesheet" href="./styles.css">
   <script src="./app.js" defer></script>
@@ -29,6 +29,7 @@
   <!-- Centered Utility Card Viewport -->
   <main class="main-viewport">
     <div class="utility-card">
+      <div class="utility-card-core">
 
       <!-- Screen 1: Unsupported Browser Gate -->
       <section id="screen-unsupported" class="screen-view" aria-label="Unsupported Browser Gate">
@@ -62,7 +63,7 @@
           <!-- Video Target & Key Section -->
           <div id="onboarding-target-section" class="hidden">
             <div class="target-meta-header">
-              <span>TARGET VIDEO</span>
+              <span>Target video</span>
               <span id="onboarding-host" class="target-host-highlight">aniwaves.ru</span>
             </div>
 
@@ -84,7 +85,7 @@
           <!-- Pair Key Box -->
           <div id="key-display-box" class="key-display-box hidden">
             <div class="key-label-wrapper">
-              <span class="key-label">KEY:</span>
+              <span class="key-label">Key</span>
               <span id="onboarding-key" class="key-value">lk-7x9q-v2m1</span>
             </div>
             <button id="btn-copy-key" type="button" class="btn-solid-secondary">
@@ -107,7 +108,7 @@
               </svg>
               <span>Download Extension (.zip)</span>
             </a>
-            <p id="onboarding-hint" class="sub-hint-text">Keep this tab open — redirects automatically once installed.</p>
+            <p id="onboarding-hint" class="sub-hint-text">Keep this tab open to redirect automatically once installed.</p>
           </div>
 
           <!-- Detailed 3-Step Setup Instructions -->
@@ -180,6 +181,7 @@
         </div>
       </section>
 
+      </div>
     </div>
   </main>
 </body>

@@ -82,6 +82,16 @@
     } catch (_) {}
   }
 
+  function setBadgeContent(el, dotClass, text, textClass) {
+    if (!el) return;
+    const dot = document.createElement('span');
+    dot.className = `badge-dot ${dotClass}`;
+    const label = document.createElement('span');
+    if (textClass) label.className = textClass;
+    label.textContent = text;
+    el.replaceChildren(dot, label);
+  }
+
   function render() {
     if (redirectTimer) {
       clearTimeout(redirectTimer);
@@ -125,17 +135,17 @@
     if (headerBadge) {
       if (activeScreen === 'unsupported') {
         headerBadge.className = 'header-badge badge-unsupported';
-        headerBadge.innerHTML = '<span class="badge-dot dot-warning"></span><span>Desktop Required</span>';
+        setBadgeContent(headerBadge, 'dot-warning', 'Desktop Required');
       } else if (activeScreen === 'paired') {
         headerBadge.className = 'header-badge badge-paired';
-        headerBadge.innerHTML = '<span class="badge-dot dot-accent pulse-anim"></span><span>Paired</span>';
+        setBadgeContent(headerBadge, 'dot-accent pulse-anim', 'Paired');
       } else if (pairKey) {
         headerBadge.className = 'header-badge badge-onboarding';
-        headerBadge.innerHTML = '<span class="badge-dot dot-accent pulse-anim"></span><span class="text-primary font-semibold">Invite Active · ~14ms</span>';
+        setBadgeContent(headerBadge, 'dot-accent pulse-anim', 'Invite Active · ~14ms', 'text-primary font-semibold');
       } else {
         headerBadge.className = 'header-badge badge-onboarding';
         const displayVersion = cachedVersion || '1.0';
-        headerBadge.innerHTML = `<span class="badge-dot dot-muted"></span><span>v${displayVersion} · P2P</span>`;
+        setBadgeContent(headerBadge, 'dot-muted', `v${displayVersion} · P2P`);
         if (cachedVersion === null) {
           fetchVersion().then(ver => {
             const hData = parseHash();
@@ -144,7 +154,7 @@
             if (!pKey) {
               const el = document.getElementById('header-badge');
               if (el) {
-                el.innerHTML = `<span class="badge-dot dot-muted"></span><span>v${ver} · P2P</span>`;
+                setBadgeContent(el, 'dot-muted', `v${ver} · P2P`);
               }
             }
           });

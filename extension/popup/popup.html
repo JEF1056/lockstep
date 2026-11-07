@@ -8,10 +8,10 @@
 </head>
 <body>
   <div class="popup-frame">
-    <!-- Header -->
+    <!-- Header (40px) -->
     <header class="popup-header">
       <div class="brand">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" class="brand-logo" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" class="brand-logo" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
           <circle cx="8" cy="12" r="5" stroke="#00E5FF" stroke-width="2.5"></circle>
           <circle cx="16" cy="12" r="5" stroke="#EC4899" stroke-width="2.5"></circle>
           <path d="M12 9C13 9.8 13.6 10.8 13.6 12C13.6 13.2 13 14.2 12 15C11 14.2 10.4 13.2 10.4 12C10.4 10.8 11 9.8 12 9Z" fill="#FBBF24"></path>
@@ -19,24 +19,8 @@
         <span class="brand-title">Lockstep</span>
       </div>
 
-      <!-- Header Status Slot -->
-      <div id="header-status-slot">
-        <!-- 1A: Idle Chip -->
-        <span id="chip-idle" class="status-chip chip-idle">
-          <span class="status-dot dot-muted"></span>
-          <span>IDLE</span>
-        </span>
-        <!-- 1B: Standby Pill -->
-        <span id="chip-standby" class="status-chip chip-standby hidden">
-          <span id="standby-header-dot" class="status-dot dot-emerald"></span>
-          <span id="standby-header-text" class="text-primary font-bold">14ms</span>
-        </span>
-        <!-- 1C: Locked/Syncing Gradient Pill -->
-        <span id="chip-syncing" class="status-chip chip-syncing hidden">
-          <span id="sync-chip-dot" class="status-dot dot-cyan animate-pulse"></span>
-          <span id="sync-chip-text">LOCKED</span>
-        </span>
-      </div>
+      <!-- Recessed Display Name Pill -->
+      <input id="input-display-name" class="header-name-pill" type="text" maxlength="24" placeholder="Your name" aria-label="Display name" spellcheck="false" autocomplete="off">
     </header>
 
     <!-- Update Banner (hidden by default) -->
@@ -47,165 +31,163 @@
       </div>
       <div class="update-actions">
         <a id="update-download-link" class="update-link" href="#" target="_blank" rel="noopener noreferrer">Download</a>
-        <button id="btn-update-reload" class="btn-update-reload" type="button" title="Extract &amp; overwrite the extension folder, then click Reload">Reload</button>
+        <button id="btn-update-reload" class="btn-update-reload" type="button" title="Extract and overwrite the extension folder, then click Reload">Reload</button>
       </div>
-    </div>
-
-    <!-- Identity Row (visible across 1A, 1B, 1C) -->
-    <div id="identity-row" class="identity-row">
-      <label for="input-display-name" class="identity-label">YOU</label>
-      <input id="input-display-name" class="identity-input" type="text" maxlength="24" placeholder="Your name…" spellcheck="false" autocomplete="off">
     </div>
 
     <!-- State 1A: Unpaired (First Run) -->
     <main id="view-unpaired" class="view">
-      <div class="view-content">
-        <!-- Kicked Banner (hidden by default) -->
-        <div id="kicked-banner" class="kicked-banner hidden" role="alert">
-          <span class="status-dot dot-amber"></span>
-          <span class="kicked-text">Removed from session by host</span>
-          <button id="btn-dismiss-kicked" class="btn-dismiss-kicked" type="button" aria-label="Dismiss notice">&times;</button>
-        </div>
+      <div class="stage-shell">
+        <div class="stage-core">
+          <!-- Kicked Banner (hidden by default) -->
+          <div id="kicked-banner" class="kicked-banner hidden" role="alert">
+            <span class="status-dot dot-amber"></span>
+            <span class="kicked-text">Removed from session by host</span>
+            <button id="btn-dismiss-kicked" class="btn-dismiss-kicked" type="button" aria-label="Dismiss notice">&times;</button>
+          </div>
 
-        <p class="value-prop">Sync any web video peer-to-peer.</p>
+          <p class="value-prop">Sync this tab live.</p>
 
-        <button id="btn-unpaired-pick" class="btn btn-primary" type="button">
-          <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-          </svg>
-          <span>Pick Video &amp; Copy Link</span>
-        </button>
+          <p id="tab-gate-hint" class="tab-gate-hint hidden">Open a specific video or reel first</p>
 
-        <details id="details-pair-key" class="pair-details">
-          <summary class="details-summary">
-            <span class="summary-left">
-              <svg class="summary-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="7.5" cy="15.5" r="5.5"/>
-                <path d="m21 2-9.6 9.6"/>
-                <path d="m15.5 7.5 3 3"/>
-                <path d="m18.5 4.5 3 3"/>
+          <button id="btn-unpaired-pick" class="btn btn-primary btn-pill" type="button">
+            <span>Sync This Tab</span>
+            <span class="btn-trailing-icon" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6"></polyline>
               </svg>
-              <span>Enter pair key</span>
             </span>
-            <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </summary>
-          <form id="form-connect" class="pair-form" novalidate>
-            <label for="input-pair-key" class="sr-only">Pair key</label>
-            <input id="input-pair-key" class="text-input" type="text" placeholder="lk-..." autocomplete="off" spellcheck="false" required>
-            <button id="btn-connect" class="btn btn-secondary-compact" type="submit">Connect</button>
-          </form>
-        </details>
+          </button>
+
+          <details id="details-pair-key" class="pair-details">
+            <summary class="details-summary">
+              <span class="summary-left">
+                <svg class="summary-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="7.5" cy="15.5" r="5.5"/>
+                  <path d="m21 2-9.6 9.6"/>
+                  <path d="m15.5 7.5 3 3"/>
+                  <path d="m18.5 4.5 3 3"/>
+                </svg>
+                <span>Join with key</span>
+              </span>
+              <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </summary>
+            <form id="form-connect" class="pair-form" novalidate>
+              <label for="input-pair-key" class="sr-only">Pair key</label>
+              <input id="input-pair-key" class="text-input" type="text" placeholder="lk-..." autocomplete="off" spellcheck="false" required>
+              <button id="btn-connect" class="btn btn-secondary-compact" type="submit">Connect</button>
+            </form>
+          </details>
+        </div>
       </div>
     </main>
 
     <!-- State 1B: Paired Standby -->
     <main id="view-paired-idle" class="view hidden">
-      <div class="view-content">
-        <!-- Status Readout & Monospace Key Row -->
-        <div class="card-row">
-          <div class="card-left">
-            <span id="idle-status-dot" class="status-dot dot-emerald"></span>
-            <span id="idle-status-text" class="status-text">Partner online</span>
+      <div class="stage-shell">
+        <div class="stage-core">
+          <!-- Status Readout & Clickable Key Pill -->
+          <div class="stage-status-row">
+            <div class="status-indicator">
+              <span id="idle-status-dot" class="status-dot dot-muted"></span>
+              <span id="idle-status-text" class="status-text">Waiting for peers</span>
+            </div>
+            <button id="btn-copy-invite" class="key-pill" type="button" title="Copy Invite Link" aria-label="Copy Invite Link">
+              <span id="idle-key-value" class="key-pill-text">lk-7x9q</span>
+              <svg id="icon-copy" class="key-pill-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+            </button>
           </div>
-          <span id="idle-key-value" class="key-readout">lk-7x9q</span>
-        </div>
 
-        <!-- Multi-Person Session Roster -->
-        <div id="roster-idle" class="session-roster"></div>
+          <p id="tab-gate-hint-idle" class="tab-gate-hint hidden">Open a specific video or reel first</p>
 
-        <!-- Action Button Group -->
-        <div class="button-row">
-          <button id="btn-paired-pick" class="btn btn-primary flex-1" type="button">
-            <svg class="btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <polygon points="6 4 20 12 6 20 6 4"/>
-            </svg>
-            <span>Select Video</span>
-          </button>
+          <!-- Peer Roster (hidden when peers.length === 0) -->
+          <div id="roster-idle" class="session-roster hidden"></div>
 
-          <button id="btn-copy-invite" class="btn btn-secondary btn-icon-label" type="button" title="Copy Invite Link" aria-label="Copy Invite Link">
-            <svg id="icon-copy" class="btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-            </svg>
-            <span id="copy-btn-text">Copy</span>
-          </button>
+          <!-- Action Button Group -->
+          <div class="button-row">
+            <button id="btn-paired-pick" class="btn btn-primary btn-pill flex-1" type="button">
+              <span>Sync This Tab</span>
+              <span class="btn-trailing-icon" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="6 4 20 12 6 20 6 4"/>
+                </svg>
+              </span>
+            </button>
 
-          <!-- Copied! Confirmation Badge -->
-          <div id="badge-copied" class="copied-badge hidden" title="Copied!" aria-label="Copied!">
-            <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
+            <button id="btn-pick-specific" class="btn-icon-round" type="button" title="Pick specific video on page" aria-label="Pick specific video on page">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"/>
+                <line x1="12" y1="3" x2="12" y2="7"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+                <line x1="3" y1="12" x2="7" y2="12"/>
+                <line x1="17" y1="12" x2="21" y2="12"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Quiet Footer -->
+          <div class="stage-footer">
+            <button id="btn-copy-invite-link" class="btn-quiet-link" type="button">Copy Invite</button>
+            <button id="btn-unpair-idle" class="btn-unpair-danger" type="button">Unpair</button>
           </div>
         </div>
       </div>
-
-      <!-- Quiet Footer -->
-      <footer class="popup-footer">
-        <span class="footer-hint">Click any highlighted video</span>
-        <button id="btn-unpair-idle" class="btn-unpair-danger" type="button">Unpair</button>
-      </footer>
     </main>
 
     <!-- State 1C: Active Sync -->
     <main id="view-syncing" class="view hidden">
-      <div class="view-content">
-        <!-- Hostname & Telemetry Card -->
-        <div class="card-telemetry">
-          <div class="telemetry-top">
-            <span id="sync-domain" class="telemetry-domain">aniwaves.ru</span>
-            <span id="sync-ping" class="telemetry-ping">12ms</span>
+      <div class="stage-shell">
+        <div class="stage-core">
+          <!-- Top Row: Dot + Synced URL + Latency + Resync Icon -->
+          <div class="sync-top-row">
+            <div class="sync-top-left">
+              <span id="sync-status-dot" class="status-dot dot-emerald animate-pulse"></span>
+              <span id="sync-domain" class="sync-domain-label">aniwaves.ru</span>
+            </div>
+            <div class="sync-top-right">
+              <span id="sync-ping" class="sync-ping-mono">12ms</span>
+              <button id="btn-resync" class="btn-icon-round btn-icon-sm" type="button" title="Resync timestamp" aria-label="Resync timestamp">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/>
+                </svg>
+              </button>
+            </div>
           </div>
 
-          <!-- Telemetry Sub-state 1: Normal Live Indicator -->
-          <div id="sync-live-row" class="telemetry-live">
-            <span id="sync-status-dot" class="status-dot dot-emerald"></span>
-            <span id="sync-status-text">p2p locked · buffer match</span>
+          <!-- Context Bar for Active Tab Navigation -->
+          <div id="sync-context-bar" class="sync-context-bar hidden">
+            <button id="btn-focus-tab" class="btn btn-secondary btn-compact flex-1" type="button">Jump to Synced Tab</button>
+            <button id="btn-switch-tab" class="btn btn-secondary btn-compact hidden" type="button">Sync This Tab</button>
+            <button id="btn-focus-video" class="btn-quiet-link hidden" type="button">Focus Video</button>
           </div>
 
-          <!-- Telemetry Sub-state 2: Muted Warning Inline Notification -->
-          <div id="sync-muted-warning" class="warning-banner hidden">
+          <!-- Muted Warning -->
+          <div id="sync-muted-warning" class="warning-banner hidden" role="alert">
             <span class="status-dot dot-amber"></span>
-            <span class="warning-text">Muted: click video tab to hear audio</span>
+            <span class="warning-text">Muted: click video tab for audio</span>
           </div>
-        </div>
 
-        <!-- Multi-Person Session Roster -->
-        <div id="roster-sync" class="session-roster"></div>
+          <!-- Peer Roster (hidden when peers.length === 0) -->
+          <div id="roster-sync" class="session-roster hidden"></div>
 
-        <!-- Action Button Row -->
-        <div class="button-row">
-          <button id="btn-copy-sync-invite" class="btn btn-primary flex-1" type="button" title="Copy Invite Link" aria-label="Copy Invite Link">
-            <svg class="btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-            </svg>
-            <span id="copy-sync-btn-text">Copy Invite Link</span>
-          </button>
+          <!-- Action Button Row (2 buttons max) -->
+          <div class="button-row">
+            <button id="btn-copy-sync-invite" class="btn btn-secondary flex-1" type="button">Copy Invite</button>
+            <button id="btn-end-session" class="btn btn-destructive" type="button">Stop Sync</button>
+          </div>
 
-          <button id="btn-end-session" class="btn btn-destructive btn-icon-label" type="button">
-            <svg class="btn-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <rect x="5" y="5" width="14" height="14" rx="2" ry="2"/>
-            </svg>
-            <span id="end-session-btn-text">End</span>
-          </button>
-
-          <button id="btn-resync" class="btn btn-secondary btn-icon-label hidden" type="button" title="Force timestamp snap" aria-label="Resync session">
-            <svg class="btn-icon icon-cyan" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00E5FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/>
-            </svg>
-            <span id="resync-btn-text">Resync</span>
-          </button>
+          <!-- Quiet Footer -->
+          <div class="stage-footer">
+            <span id="sync-footer-hint" class="footer-hint">Locked to 1 tab</span>
+            <button id="btn-unpair-sync" class="btn-unpair-danger" type="button">Unpair</button>
+          </div>
         </div>
       </div>
-
-      <!-- Quiet Footer -->
-      <footer class="popup-footer">
-        <span id="sync-footer-hint" class="footer-hint">Both browsers synced</span>
-        <button id="btn-unpair-sync" class="btn-unpair-danger" type="button">Unpair</button>
-      </footer>
     </main>
   </div>
 

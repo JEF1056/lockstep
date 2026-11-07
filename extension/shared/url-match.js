@@ -4,11 +4,35 @@
 
 export const INVITE_BASE_URL = 'https://jef1056.github.io/lockstep/';
 
-const ALLOWED_QUERY_PARAMS = new Set(['v', 'id', 'ep', 'episode', 'clip']);
+export const ALLOWED_QUERY_PARAMS = new Set([
+  'v',
+  'id',
+  'video',
+  'vid',
+  'video_id',
+  'ep',
+  'episode',
+  's',
+  'season',
+  'clip',
+  'part',
+  'p',
+  'bvid',
+  'aid',
+  'cid',
+  'mid',
+  'stream',
+  'room',
+  'ch',
+  'channel',
+  'docid',
+  'movie',
+  'watch'
+]);
 
 /**
  * Strips tracking parameters, timestamps, and hashes while preserving
- * video identity (origin, pathname, and essential query params like v, id, ep, episode, clip).
+ * video identity (origin, pathname, and essential query params).
  */
 export function canonicalizeVideoUrl(url) {
   if (!url) return '';
@@ -45,6 +69,72 @@ export function canonicalizeVideoUrl(url) {
   }
 
   return urlObj.toString();
+}
+
+/**
+ * Evaluates whether a URL represents a shareable video/stream/reel page
+ * using site-agnostic path and parameter heuristics (zero hardcoded domains).
+ */
+export function isShareableVideoPageUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return false;
+  }
+
+  // Preserved video identifier query parameters
+  for (const key of ALLOWED_QUERY_PARAMS) {
+    const val = u.searchParams.get(key);
+    if (val && val.trim().length > 0) {
+      return true;
+    }
+  }
+
+  // Search queries indicate search results pages, never individual video pages
+  for (const key of ['q', 'search_query', 'query', 'keyword']) {
+    if (u.searchParams.has(key)) {
+      return false;
+    }
+  }
+
+  const p = u.pathname.replace(/\/+$/, '');
+  if (!p || p === '/') {
+    return false;
+  }
+
+  const segs = p.split('/').filter(Boolean);
+  if (segs.length === 0) {
+    return false;
+  }
+  const s0 = segs[0].toLowerCase();
+
+  if (['feed', 'directory', 'search', 'results'].includes(s0)) {
+    return false;
+  }
+
+  if (segs.length === 1 && [
+    'home', 'index', 'browse', 'discover', 'explore',
+    'trending', 'popular', 'foryou', 'following', 'subscriptions',
+    'categories', 'channels'
+  ].includes(s0)) {
+    return false;
+  }
+
+  if (s0.startsWith('@') && segs.length <= 2 && (!segs[1] || /^(featured|videos|shorts|streams|releases|playlists|community|about)$/i.test(segs[1]))) {
+    return false;
+  }
+
+  if (/^(channel|c|user)$/i.test(s0) && segs.length <= 3 && (!segs[2] || /^(featured|videos|shorts|streams|playlists|community|about)$/i.test(segs[2]))) {
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -102,34 +192,19 @@ export function parseInviteUrl(url) {
 
 /**
  * Finds an open browser tab matching the target video URL.
- * Compares canonical video URLs, falling back to origin + pathname match.
+ * Compares canonical video URLs strictly.
  */
 export function findMatchingTab(tabs, url) {
   if (!Array.isArray(tabs) || !url) return null;
   const targetCanon = canonicalizeVideoUrl(url);
   if (!targetCanon) return null;
 
-  // 1. Exact canonical URL match
   for (const tab of tabs) {
     if (!tab || !tab.url) continue;
     if (canonicalizeVideoUrl(tab.url) === targetCanon) {
       return tab;
     }
   }
-
-  // 2. Fallback: origin + pathname match
-  try {
-    const targetObj = new URL(targetCanon);
-    for (const tab of tabs) {
-      if (!tab || !tab.url) continue;
-      try {
-        const tabObj = new URL(tab.url);
-        if (tabObj.origin === targetObj.origin && tabObj.pathname === targetObj.pathname) {
-          return tab;
-        }
-      } catch {}
-    }
-  } catch {}
 
   return null;
 }

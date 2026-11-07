@@ -6,7 +6,8 @@ import {
   findMatchingTab,
   buildInviteUrl,
   parseInviteUrl,
-  generatePairKey
+  generatePairKey,
+  isShareableVideoPageUrl
 } from '../extension/shared/url-match.js';
 
 describe('URL Match - Constants & Pair Key Generation', () => {
@@ -117,9 +118,18 @@ describe('URL Match - findMatchingTab', () => {
     assert.equal(match.id, 2);
   });
 
-  test('finds matching tab via fallback origin + path', () => {
+  test('does NOT match different videos on same origin and pathname (watch?v=A vs watch?v=B)', () => {
     const tabs = [
-      { id: 10, url: 'https://aniwaves.to/watch/one-piece.ov8/ep-1?server=streamtape' },
+      { id: 10, url: 'https://www.youtube.com/watch?v=OLD_VIDEO' }
+    ];
+
+    const match = findMatchingTab(tabs, 'https://www.youtube.com/watch?v=NEW_VIDEO');
+    assert.equal(match, null);
+  });
+
+  test('matches tabs when only ignored query params differ (?server=a vs ?server=b)', () => {
+    const tabs = [
+      { id: 10, url: 'https://aniwaves.to/watch/one-piece.ov8/ep-1?server=streamtape' }
     ];
 
     const match = findMatchingTab(tabs, 'https://aniwaves.to/watch/one-piece.ov8/ep-1?server=vidstream');
@@ -134,5 +144,56 @@ describe('URL Match - findMatchingTab', () => {
 
     const match = findMatchingTab(tabs, 'https://example.com/target-video');
     assert.equal(match, null);
+  });
+});
+
+describe('URL Match - isShareableVideoPageUrl', () => {
+  test('rejects invalid or non-http(s) URLs and bare site homepages', () => {
+    assert.equal(isShareableVideoPageUrl(''), false);
+    assert.equal(isShareableVideoPageUrl(null), false);
+    assert.equal(isShareableVideoPageUrl('chrome://extensions/'), false);
+    assert.equal(isShareableVideoPageUrl('file:///Users/test/video.mp4'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com'), false);
+    assert.equal(isShareableVideoPageUrl('https://twitch.tv/'), false);
+  });
+
+  test('allows pages with explicit video/episode query params even on root or feed paths', () => {
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), true);
+    assert.equal(isShareableVideoPageUrl('https://site.example/?video_id=123'), true);
+    assert.equal(isShareableVideoPageUrl('https://site.example/feed?bvid=BV1xx411c7mD'), true);
+    assert.equal(isShareableVideoPageUrl('https://site.example/watch?ep=4&season=2'), true);
+  });
+
+  test('rejects search result pages and directory/feed/browse pages', () => {
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/results?search_query=cats'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/search?q=anime'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/videos?query=music'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/browse?keyword=live'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/feed/subscriptions'), false);
+    assert.equal(isShareableVideoPageUrl('https://twitch.tv/directory/following'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/explore'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/trending/'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/foryou'), false);
+    assert.equal(isShareableVideoPageUrl('https://site.example/home'), false);
+  });
+
+  test('rejects @handle and channel/user profile index pages without video IDs', () => {
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/@creator'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/@creator/videos'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/@creator/shorts'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/channel/UC12345'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/channel/UC12345/streams'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/c/SomeChannel/playlists'), false);
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/user/SomeUser/about'), false);
+  });
+
+  test('allows actual video, shorts, stream, and episode paths', () => {
+    assert.equal(isShareableVideoPageUrl('https://www.youtube.com/shorts/abc123XYZ'), true);
+    assert.equal(isShareableVideoPageUrl('https://aniwaves.to/watch/one-piece.ov8/ep-1'), true);
+    assert.equal(isShareableVideoPageUrl('https://www.tiktok.com/@user123/video/71234567890'), true);
+    assert.equal(isShareableVideoPageUrl('https://site.example/video'), true);
+    assert.equal(isShareableVideoPageUrl('https://site.example/watch'), true);
+    assert.equal(isShareableVideoPageUrl('https://twitch.tv/shroud'), true);
   });
 });

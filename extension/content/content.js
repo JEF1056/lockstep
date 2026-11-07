@@ -31,6 +31,91 @@
   let videoListeners = null;
   let videoObserver = null;
   const reportedVideos = new WeakSet();
+  let lastPickedVideo = null;
+  let isPaired = false;
+  let userReleasedHold = false;
+  let holdCount = 0;
+  let holdPageUrl = (typeof window !== 'undefined' && window.location?.href) ? window.location.href : '';
+  let loadTime = Date.now();
+  let onScrollRebind = null;
+
+  function releaseAutoplayHold() {
+    userReleasedHold = true;
+  }
+
+  function initPairKeyWatcher() {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local?.get) {
+      try {
+        const p = chrome.storage.local.get(['pairKey'], (result) => {
+          if (result && result.pairKey) {
+            isPaired = true;
+          }
+        });
+        if (p && typeof p.then === 'function') {
+          p.then(res => {
+            if (res && res.pairKey) isPaired = true;
+          }).catch(() => {});
+        }
+      } catch {}
+    }
+    if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.addListener) {
+      try {
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area === 'local' && changes?.pairKey) {
+            isPaired = Boolean(changes.pairKey.newValue);
+          }
+        });
+      } catch {}
+    }
+  }
+
+  function onDocumentPlayCapture(e) {
+    if (userReleasedHold || currentSyncVideo || !isPaired) return;
+    const path = (typeof window !== 'undefined' && window.location?.pathname) ? window.location.pathname : '';
+    const search = (typeof window !== 'undefined' && window.location?.search) ? window.location.search : '';
+    if (path === '/' && !search) return;
+
+    const curUrl = (typeof window !== 'undefined' && window.location?.href) ? window.location.href : '';
+    if (curUrl !== holdPageUrl) {
+      holdPageUrl = curUrl;
+      holdCount = 0;
+      loadTime = Date.now();
+    }
+
+    if (Date.now() - loadTime > 6000) return;
+    if (holdCount >= 3) return;
+
+    const target = e?.target;
+    if (!target || target.tagName !== 'VIDEO') return;
+    if (!isValidVideo(target)) return;
+
+    const curTime = Number(target.currentTime) || 0;
+    if (curTime < 4) {
+      holdCount++;
+      try { target.pause(); } catch {}
+      sendMainCommand('pause');
+      if (curTime < 2) {
+        try { target.currentTime = 0; } catch {}
+      }
+    }
+  }
+
+  function onTrustedHoldRelease(e) {
+    if (!e) {
+      userReleasedHold = true;
+      return;
+    }
+    if (e.isTrusted === false) return;
+    if (e.type === 'pointerdown') {
+      userReleasedHold = true;
+    } else if (e.type === 'keydown') {
+      const k = e.key;
+      const c = e.code;
+      if (c === 'Space' || k === ' ' || c === 'KeyK' || k === 'k' || k === 'K' || c === 'Enter' || k === 'Enter') {
+        userReleasedHold = true;
+      }
+    }
+  }
 
   function sendMainCommand(action, detail = {}) {
     try {
@@ -96,31 +181,158 @@
   }
 
   /**
-   * Filter out tiny ad videos (< 140px in either dimension)
+   * Filter out preview, ad, feed card, decorative loop, and auxiliary floating videos
+   */
+  function isPreviewOrAuxiliaryVideo(v) {
+    if (!v || v.isConnected === false) return true;
+
+    // Walk ancestors up to 12 levels
+    const previewPattern = /\b(inline-preview|hover-preview|preview-player|thumbnail-preview|video-preview|miniplayer|mini-player|pip-player|ad-showing|ad-interrupting|video-ads|ima-ad|preroll|masthead-ad)\b/i;
+    let curr = v;
+    let depth = 0;
+    while (curr && depth < 12) {
+      const idStr = (typeof curr.id === 'string') ? curr.id : '';
+      const classStr = (typeof curr.className === 'string')
+        ? curr.className
+        : (curr.className && typeof curr.className.baseVal === 'string' ? curr.className.baseVal : '');
+      if (previewPattern.test(idStr) || previewPattern.test(classStr)) {
+        return true;
+      }
+
+      if (curr.tagName === 'A' && (curr.getAttribute?.('href') || curr.href)) {
+        try {
+          const curHref = (typeof window !== 'undefined' && window.location?.href) ? window.location.href : '';
+          if (curHref) {
+            const curUrl = new URL(curHref);
+            if (curUrl.protocol === 'http:' || curUrl.protocol === 'https:') {
+              const rawHref = curr.getAttribute?.('href') || curr.href;
+              const linkUrl = new URL(rawHref, curHref);
+              const curKey = curUrl.origin + curUrl.pathname + curUrl.search;
+              const linkKey = linkUrl.origin + linkUrl.pathname + linkUrl.search;
+              if (curKey !== linkKey) return true;
+            }
+          }
+        } catch {}
+      }
+
+      curr = curr.parentElement || curr.parentNode || (typeof curr.getRootNode === 'function' ? curr.getRootNode()?.host : null);
+      depth++;
+    }
+
+    // Decorative background loop
+    if (v.loop === true && v.muted === true && !v.controls && typeof v.duration === 'number' && v.duration > 0 && v.duration < 45) {
+      return true;
+    }
+
+    // Floating hover preview over grid card
+    if (typeof window !== 'undefined' && (window.innerWidth || 0) >= 700 && typeof v.getBoundingClientRect === 'function') {
+      try {
+        const r = v.getBoundingClientRect();
+        if (r && r.width > 0 && r.width < (window.innerWidth || 0) * 0.45 && typeof document !== 'undefined' && typeof document.elementsFromPoint === 'function') {
+          const curHref = window.location?.href || '';
+          if (curHref) {
+            const curUrl = new URL(curHref);
+            if (curUrl.protocol === 'http:' || curUrl.protocol === 'https:') {
+              const curKey = curUrl.origin + curUrl.pathname + curUrl.search;
+              const points = document.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2) || [];
+              for (let i = 0; i < points.length; i++) {
+                const pt = points[i];
+                if (!pt) continue;
+                const a = (pt.tagName === 'A')
+                  ? pt
+                  : (typeof pt.closest === 'function' ? pt.closest('a') : (typeof pt.querySelector === 'function' ? pt.querySelector('a') : null));
+                if (a && (a.getAttribute?.('href') || a.href)) {
+                  const rawHref = a.getAttribute?.('href') || a.href;
+                  const linkUrl = new URL(rawHref, curHref);
+                  const linkKey = linkUrl.origin + linkUrl.pathname + linkUrl.search;
+                  if (linkKey !== curKey) {
+                    return true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    return false;
+  }
+
+  /**
+   * Filter out tiny ad videos (< 140px in either dimension) and auxiliary/preview videos
    */
   function isValidVideo(video) {
     if (!video) return false;
-    const rect = video.getBoundingClientRect();
+    if (isPreviewOrAuxiliaryVideo(video)) return false;
+    const rect = (typeof video.getBoundingClientRect === 'function') ? video.getBoundingClientRect() : { width: 0, height: 0 };
     const w = rect.width || video.videoWidth || 0;
     const h = rect.height || video.videoHeight || 0;
     return w >= 140 && h >= 140;
   }
 
+  function getViewportVisibleArea(v) {
+    if (!v) return 0;
+    const r = (typeof v.getBoundingClientRect === 'function') ? v.getBoundingClientRect() : { width: 0, height: 0, left: 0, right: 0, top: 0, bottom: 0 };
+    const iw = (typeof window !== 'undefined') ? window.innerWidth : undefined;
+    const ih = (typeof window !== 'undefined') ? window.innerHeight : undefined;
+    if (typeof iw === 'number' && typeof ih === 'number' && iw > 0 && ih > 0) {
+      const rLeft = (typeof r.left === 'number') ? r.left : 0;
+      const rRight = (typeof r.right === 'number') ? r.right : (rLeft + (r.width || 0));
+      const rTop = (typeof r.top === 'number') ? r.top : 0;
+      const rBottom = (typeof r.bottom === 'number') ? r.bottom : (rTop + (r.height || 0));
+
+      const left = Math.max(0, rLeft);
+      const right = Math.min(iw, rRight);
+      const top = Math.max(0, rTop);
+      const bottom = Math.min(ih, rBottom);
+
+      const w = Math.max(0, right - left);
+      const h = Math.max(0, bottom - top);
+      return w * h;
+    }
+    return (r.width || v.videoWidth || 0) * (r.height || v.videoHeight || 0);
+  }
+
   /**
-   * Select the primary video element based on valid dimensions and largest surface area
+   * Select the primary video element based on valid dimensions, viewport visibility, and surface area
    */
   function getBestVideo() {
     const all = collectVideos();
     const valid = all.filter(isValidVideo);
     if (valid.length === 0) {
-      return all[0] || null;
+      return null;
     }
     valid.sort((a, b) => {
-      const ra = a.getBoundingClientRect();
-      const rb = b.getBoundingClientRect();
-      const areaA = (ra.width || a.videoWidth || 0) * (ra.height || a.videoHeight || 0);
-      const areaB = (rb.width || b.videoWidth || 0) * (rb.height || b.videoHeight || 0);
-      return areaB - areaA;
+      const visA = getViewportVisibleArea(a);
+      const visB = getViewportVisibleArea(b);
+      const hasVisA = visA > 0 ? 1 : 0;
+      const hasVisB = visB > 0 ? 1 : 0;
+
+      // (1) visArea > 0 desc
+      if (hasVisB !== hasVisA) return hasVisB - hasVisA;
+
+      // (2) (v === lastPickedVideo && v.isConnected !== false ? 1 : 0) desc when visArea > 0
+      if (hasVisA > 0) {
+        const isLastA = (a === lastPickedVideo && a.isConnected !== false) ? 1 : 0;
+        const isLastB = (b === lastPickedVideo && b.isConnected !== false) ? 1 : 0;
+        if (isLastB !== isLastA) return isLastB - isLastA;
+      }
+
+      // (3) visArea desc
+      if (visB !== visA) return visB - visA;
+
+      // (4) (!v.paused ? 1 : 0) desc
+      const playA = (!a.paused) ? 1 : 0;
+      const playB = (!b.paused) ? 1 : 0;
+      if (playB !== playA) return playB - playA;
+
+      // (5) rawArea desc
+      const ra = (typeof a.getBoundingClientRect === 'function') ? a.getBoundingClientRect() : { width: 0, height: 0 };
+      const rb = (typeof b.getBoundingClientRect === 'function') ? b.getBoundingClientRect() : { width: 0, height: 0 };
+      const rawA = (ra.width || a.videoWidth || 0) * (ra.height || a.videoHeight || 0);
+      const rawB = (rb.width || b.videoWidth || 0) * (rb.height || b.videoHeight || 0);
+      return rawB - rawA;
     });
     return valid[0];
   }
@@ -130,8 +342,9 @@
    */
   function isSelectableVideo(v) {
     if (!v || v.tagName !== 'VIDEO') return false;
+    if (isPreviewOrAuxiliaryVideo(v)) return false;
     try {
-      const rect = v.getBoundingClientRect();
+      const rect = (typeof v.getBoundingClientRect === 'function') ? v.getBoundingClientRect() : { width: 0, height: 0 };
       const w = rect.width || (rect.right - rect.left) || 0;
       const h = rect.height || (rect.bottom - rect.top) || 0;
       if (w < 120 || h < 80) return false;
@@ -639,6 +852,7 @@
     if (!video) {
       video = getBestVideo();
     }
+    lastPickedVideo = video;
 
     let state = { paused: true, time: 0, rate: 1 };
     let duration = 0;
@@ -666,7 +880,8 @@
         state,
         duration,
         area,
-        hasVideo: Boolean(video)
+        hasVideo: Boolean(video),
+        pageUrl: (typeof window !== 'undefined' && window === window.top && window.location?.href) ? window.location.href : ''
       });
 
       if (response && response.copyInvite && response.inviteUrl) {
@@ -1307,8 +1522,19 @@
       video: currentSyncVideo
     };
 
-    // 1000ms periodic heartbeat
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      if (onScrollRebind) {
+        try { window.removeEventListener('scroll', onScrollRebind, { passive: true }); } catch {}
+      }
+      onScrollRebind = () => {
+        checkAndRebindSyncVideo();
+      };
+      window.addEventListener('scroll', onScrollRebind, { passive: true });
+    }
+
+    // 1000ms periodic heartbeat + reel scroll rebind check
     heartbeatInterval = setInterval(() => {
+      checkAndRebindSyncVideo();
       if (currentSyncVideo && engine && !isBuffering && !followerBootLock) {
         const msg = engine.localHeartbeat(getVideoState(), Date.now());
         sendLocalSyncMsg(msg);
@@ -1318,9 +1544,51 @@
     return { ok: true, state: getVideoState(), duration: currentSyncVideo.duration || 0 };
   }
 
+  function checkAndRebindSyncVideo() {
+    if (!currentSyncVideo) return;
+    const isDisconnectedOrHidden = (currentSyncVideo.isConnected === false) ||
+      (typeof window !== 'undefined' && window.innerWidth > 0 && getViewportVisibleArea(currentSyncVideo) === 0);
+    if (!isDisconnectedOrHidden) return;
+
+    const nextV = getBestVideo();
+    const isNextVisible = (typeof window !== 'undefined' && window.innerWidth > 0) ? getViewportVisibleArea(nextV) > 0 : true;
+    if (nextV && nextV !== currentSyncVideo && isNextVisible) {
+      if (videoListeners && videoListeners.video) {
+        const v = videoListeners.video;
+        try {
+          v.removeEventListener('play', videoListeners.onPlay);
+          v.removeEventListener('pause', videoListeners.onPause);
+          v.removeEventListener('seeking', videoListeners.onSeeking);
+          v.removeEventListener('seeked', videoListeners.onSeeked);
+          v.removeEventListener('ratechange', videoListeners.onRateChange);
+          v.removeEventListener('waiting', videoListeners.onWaiting);
+          v.removeEventListener('playing', videoListeners.onPlaying);
+        } catch {}
+      }
+      currentSyncVideo = nextV;
+      lastPickedVideo = nextV;
+      if (videoListeners) {
+        videoListeners.video = nextV;
+        nextV.addEventListener('play', videoListeners.onPlay);
+        nextV.addEventListener('pause', videoListeners.onPause);
+        nextV.addEventListener('seeking', videoListeners.onSeeking);
+        nextV.addEventListener('seeked', videoListeners.onSeeked);
+        nextV.addEventListener('ratechange', videoListeners.onRateChange);
+        nextV.addEventListener('waiting', videoListeners.onWaiting);
+        nextV.addEventListener('playing', videoListeners.onPlaying);
+      }
+    }
+  }
+
   let pendingMetadataSnap = null;
 
   function detachSync() {
+    if (onScrollRebind && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      try {
+        window.removeEventListener('scroll', onScrollRebind, { passive: true });
+      } catch {}
+      onScrollRebind = null;
+    }
     if (pendingMetadataSnap && currentSyncVideo) {
       try {
         currentSyncVideo.removeEventListener('loadedmetadata', pendingMetadataSnap);
@@ -1500,6 +1768,7 @@
     }
 
     if (type === 'ATTACH_SYNC') {
+      releaseAutoplayHold();
       attachSync(message.selfId || message.peerId, message.initialState, {
         isHost: message.isHost,
         rttMs: message.rttMs,
@@ -1509,6 +1778,7 @@
     }
 
     if (type === 'APPLY_INITIAL_STATE') {
+      releaseAutoplayHold();
       (async () => {
         let video = currentSyncVideo || getBestVideo();
         const engine = await getSyncEngine();
@@ -1535,6 +1805,52 @@
         sendResponse({ ok: true, hasVideo: Boolean(video) });
       })();
       return true; // async
+    }
+
+    if (type === 'ENGAGE_TAB_SYNC') {
+      releaseAutoplayHold();
+      const video = getBestVideo();
+      if (!video) {
+        sendResponse({ ok: false, found: false });
+        return false;
+      }
+      lastPickedVideo = video;
+      (async () => {
+        try {
+          await pickTarget(video);
+        } catch {}
+        sendResponse({ ok: true, found: true });
+      })();
+      return true; // async
+    }
+
+    if (type === 'REBIND_TAB_VIDEO') {
+      releaseAutoplayHold();
+      lastPickedVideo = null;
+      (async () => {
+        let v = getBestVideo();
+        if (!v) {
+          await new Promise(r => setTimeout(r, 250));
+          v = getBestVideo();
+        }
+        if (!v) {
+          await new Promise(r => setTimeout(r, 500));
+          v = getBestVideo();
+        }
+        if (v) {
+          reportVideoReady(v);
+        }
+        await attachSync(message.selfId, null, { isHost: Boolean(message.isHost) });
+        sendResponse({ ok: true });
+      })();
+      return true; // async
+    }
+
+    if (type === 'REFOCUS_VIDEO') {
+      const v = currentSyncVideo || getBestVideo();
+      v?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+      sendResponse({ ok: Boolean(v) });
+      return false;
     }
 
     if (type === 'REMOTE_SYNC') {
@@ -1611,8 +1927,15 @@
     try { detachSync(); } catch {}
     try { videoObserver?.disconnect(); } catch {}
     try {
-      window.removeEventListener('pointerdown', onTrustedUserInteraction, true);
-      window.removeEventListener('keydown', onTrustedUserInteraction, true);
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('play', onDocumentPlayCapture, true);
+        document.removeEventListener('pointerdown', onTrustedHoldRelease, true);
+        document.removeEventListener('keydown', onTrustedHoldRelease, true);
+      }
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('pointerdown', onTrustedUserInteraction, true);
+        window.removeEventListener('keydown', onTrustedUserInteraction, true);
+      }
     } catch {}
     try {
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.removeListener && messageListener) {
@@ -1632,6 +1955,15 @@
       }
     };
     window.__lockstepTeardown = teardown;
+  }
+
+  // Preemptive autoplay hold & pair watcher initialization
+  initPairKeyWatcher();
+
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('play', onDocumentPlayCapture, true);
+    document.addEventListener('pointerdown', onTrustedHoldRelease, true);
+    document.addEventListener('keydown', onTrustedHoldRelease, true);
   }
 
   // Initialize observer

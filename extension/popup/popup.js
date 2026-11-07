@@ -26,6 +26,7 @@ const kickedBanner = document.getElementById('kicked-banner');
 const btnDismissKicked = document.getElementById('btn-dismiss-kicked');
 const tabGateHint = document.getElementById('tab-gate-hint');
 const btnUnpairedPick = document.getElementById('btn-unpaired-pick');
+const btnUnpairedPickSpecific = document.getElementById('btn-unpaired-pick-specific');
 const detailsPairKey = document.getElementById('details-pair-key');
 const formConnect = document.getElementById('form-connect');
 const inputPairKey = document.getElementById('input-pair-key');
@@ -53,6 +54,7 @@ const syncContextBar = document.getElementById('sync-context-bar');
 const btnFocusTab = document.getElementById('btn-focus-tab');
 const btnSwitchTab = document.getElementById('btn-switch-tab');
 const btnFocusVideo = document.getElementById('btn-focus-video');
+const btnPickSpecificSync = document.getElementById('btn-pick-specific-sync');
 const syncMutedWarning = document.getElementById('sync-muted-warning');
 const rosterSync = document.getElementById('roster-sync');
 const btnCopySyncInvite = document.getElementById('btn-copy-sync-invite');
@@ -66,6 +68,7 @@ let copySyncTimeout = null;
 let displayNameDebounceTimer = null;
 let kickedNoticeDismissed = false;
 let lastOverriddenViewerName = null;
+let standbyPickerArmed = false;
 
 // Send message to background service worker
 function sendSw(message) {
@@ -360,6 +363,9 @@ async function render() {
     if (btnUnpairedPick) {
       btnUnpairedPick.disabled = !canSync;
     }
+    if (btnUnpairedPickSpecific) {
+      btnUnpairedPickSpecific.disabled = !canSync;
+    }
   }
 
   // State 1B: Paired Standby
@@ -387,6 +393,13 @@ async function render() {
     if (btnPairedPick) {
       btnPairedPick.disabled = !canSync;
     }
+    if (btnPickSpecific) {
+      btnPickSpecific.disabled = !canSync;
+    }
+    if (canSync && currentTab?.id && !standbyPickerArmed) {
+      standbyPickerArmed = true;
+      sendSw({ target: 'sw', type: 'ARM_STANDBY_PICKER', tabId: currentTab.id });
+    }
 
     renderRoster(rosterIdle, currentStatus);
   }
@@ -408,6 +421,11 @@ async function render() {
     // Context bar for tab navigation
     const currentTab = currentStatus.currentTab;
     if (syncContextBar) {
+      const showPickSpecificSync = Boolean(currentTab && (currentTab.isSyncedTab || currentTab.canSync));
+      if (btnPickSpecificSync) {
+        btnPickSpecificSync.classList.toggle('hidden', !showPickSpecificSync);
+      }
+
       if (currentTab && !currentTab.isSyncedTab) {
         syncContextBar.classList.remove('hidden');
         if (btnFocusTab) btnFocusTab.classList.remove('hidden');
@@ -420,6 +438,11 @@ async function render() {
         if (btnFocusTab) btnFocusTab.classList.add('hidden');
         if (btnSwitchTab) btnSwitchTab.classList.add('hidden');
         if (btnFocusVideo) btnFocusVideo.classList.remove('hidden');
+      } else if (showPickSpecificSync) {
+        syncContextBar.classList.remove('hidden');
+        if (btnFocusTab) btnFocusTab.classList.add('hidden');
+        if (btnSwitchTab) btnSwitchTab.classList.add('hidden');
+        if (btnFocusVideo) btnFocusVideo.classList.add('hidden');
       } else {
         syncContextBar.classList.add('hidden');
       }
@@ -693,6 +716,7 @@ if (btnUpdateReload) {
 
 // Action Button Event Listeners
 if (btnUnpairedPick) btnUnpairedPick.addEventListener('click', handleUnpairedPick);
+if (btnUnpairedPickSpecific) btnUnpairedPickSpecific.addEventListener('click', handlePickSpecific);
 if (formConnect) formConnect.addEventListener('submit', handleConnect);
 if (btnCopyInvite) btnCopyInvite.addEventListener('click', handleCopyKeyPill);
 if (btnPairedPick) btnPairedPick.addEventListener('click', handlePairedPick);
@@ -704,6 +728,7 @@ if (btnResync) btnResync.addEventListener('click', handleResync);
 if (btnFocusTab) btnFocusTab.addEventListener('click', handleFocusTab);
 if (btnSwitchTab) btnSwitchTab.addEventListener('click', handleSwitchTab);
 if (btnFocusVideo) btnFocusVideo.addEventListener('click', handleFocusTab);
+if (btnPickSpecificSync) btnPickSpecificSync.addEventListener('click', handlePickSpecific);
 if (btnCopySyncInvite) btnCopySyncInvite.addEventListener('click', handleCopySyncInvite);
 if (btnEndSession) btnEndSession.addEventListener('click', handleEndSession);
 if (btnUnpairSync) btnUnpairSync.addEventListener('click', handleUnpair);

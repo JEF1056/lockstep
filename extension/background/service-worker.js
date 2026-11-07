@@ -210,7 +210,7 @@ async function updateBadge(activeSession, isMuted) {
  */
 async function getSessionState() {
   if (chrome.storage?.session) {
-    return await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'autoplayMuted', 'pendingReload', 'peers', 'peerCount']);
+    return await chrome.storage.session.get(['activeSession', 'peerOnline', 'rttMs', 'clockOffsetMs', 'autoplayMuted', 'pendingReload', 'peers', 'peerCount']);
   }
   return {};
 }
@@ -562,11 +562,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             setTimeout(async () => {
               try {
                 const cur = await getSessionState();
-                if (cur.activeSession?.tabId === tabId) {
+                if (cur.activeSession?.tabId === tabId && cur.activeSession?.frameId == null) {
                   const { peerId } = await chrome.storage.local.get(['peerId']);
                   await ensureContentScripts(tabId);
                   chrome.tabs.sendMessage(tabId, { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }).catch(() => {});
-                  chrome.tabs.sendMessage(tabId, { target: 'content', type: 'REBIND_TAB_VIDEO', selfId: peerId, isHost: false }).catch(() => {});
+                  chrome.tabs.sendMessage(tabId, {
+                    target: 'content',
+                    type: 'REBIND_TAB_VIDEO',
+                    selfId: peerId,
+                    isHost: false,
+                    url: cur.activeSession?.url,
+                    videoHint: cur.activeSession?.videoHint || null
+                  }).catch(() => {});
                 }
               } catch (_) {}
             }, delay);
@@ -593,11 +600,23 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         await setSessionState({ activeSession: session.activeSession });
         await syncSelfMetaToOffscreen();
 
-        const sendRebind = () => {
-          chrome.tabs.sendMessage(
-            tabId,
-            { target: 'content', type: 'REBIND_TAB_VIDEO', selfId: peerId, isHost: true }
-          ).catch(() => {});
+        const sendRebind = async () => {
+          try {
+            const cur = await getSessionState();
+            if (cur.activeSession?.tabId === tabId && cur.activeSession?.frameId == null) {
+              chrome.tabs.sendMessage(
+                tabId,
+                {
+                  target: 'content',
+                  type: 'REBIND_TAB_VIDEO',
+                  selfId: peerId,
+                  isHost: true,
+                  url: newCanon,
+                  videoHint: cur.activeSession?.videoHint || null
+                }
+              ).catch(() => {});
+            }
+          } catch (_) {}
         };
 
         sendRebind();
@@ -610,11 +629,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             type: 'SHARE_FEED',
             pageUrl: changeInfo.url,
             sourceHint: null,
+            videoHint: session.activeSession?.videoHint || null,
             state: {
               paused: false,
               time: 0,
               rate: 1,
-              seq: Math.floor(Date.now() / 100) % 1000000,
+              seq: 1,
               seqOwner: peerId,
               timestamp: Date.now()
             }
@@ -722,6 +742,7 @@ async function handleOffscreenMessage(message, sendResponse) {
           type: 'SHARE_FEED',
           pageUrl: hostSession.pageUrl,
           sourceHint: hostSession.sourceHint || null,
+          videoHint: hostSession.videoHint || null,
           state: snap?.state || null,
           timestamp: Date.now()
         }
@@ -732,168 +753,264 @@ async function handleOffscreenMessage(message, sendResponse) {
   }
 
   if (type === 'RTC_RECV') {
-    const payload = message.payload;
-    if (!payload) {
-      sendResponse({ ok: false, error: 'Empty payload' });
-      return;
+    const res = await handlePeerPayload(message.payload, message);
+    sendResponse(res || { ok: true });
+    return;
+  }
+
+  sendResponse({ ok: false, error: 'Unknown offscreen message' });
+}
+
+async function handlePeerPayload(payload, message = {}) {
+  if (!payload) return { ok: false, error: 'Empty payload' };
+  const payloadType = payload.type || payload.action;
+
+  // Handle incoming feed share
+  if (payloadType === 'SHARE_FEED') {
+    const pageUrl = payload.pageUrl;
+    if (!isShareableVideoPageUrl(pageUrl)) {
+      return { ok: false, error: 'unshareable_page' };
+    }
+    if (armedPickerTabId) {
+      await cancelArmedPicker(armedPickerTabId);
+    }
+    const canonUrl = canonicalizeVideoUrl(pageUrl);
+    const prevSession = await getSessionState();
+    const tabs = await chrome.tabs.query({});
+    let targetTab = findMatchingTab(tabs, pageUrl);
+    let isNavigating = false;
+
+    if (!targetTab && prevSession.activeSession?.tabId) {
+      const prevTabId = prevSession.activeSession.tabId;
+      const exists = tabs.some((t) => t.id === prevTabId);
+      if (exists) {
+        remoteNavGuard.set(prevTabId, { canonUrl, until: Date.now() + 4500 });
+        targetTab = await chrome.tabs.update(prevTabId, { url: pageUrl, active: true }).catch(() => null);
+        isNavigating = true;
+      }
     }
 
-    const payloadType = payload.type || payload.action;
-
-    // Handle incoming feed share
-    if (payloadType === 'SHARE_FEED') {
-      const pageUrl = payload.pageUrl;
-      if (!isShareableVideoPageUrl(pageUrl)) {
-        sendResponse({ ok: false, error: 'unshareable_page' });
-        return;
+    if (targetTab) {
+      if (canonicalizeVideoUrl(targetTab.url) !== canonUrl) {
+        remoteNavGuard.set(targetTab.id, { canonUrl, until: Date.now() + 4500 });
+        await chrome.tabs.update(targetTab.id, { url: pageUrl, active: true }).catch(() => {});
+        isNavigating = true;
+      } else {
+        await chrome.tabs.update(targetTab.id, { active: true }).catch(() => {});
       }
+      if (targetTab.windowId) {
+        await chrome.windows.update(targetTab.windowId, { focused: true }).catch(() => {});
+      }
+    } else {
+      targetTab = await chrome.tabs.create({ url: pageUrl, active: true });
+      isNavigating = true;
+    }
+
+    const activeSession = {
+      tabId: targetTab.id,
+      frameId: null,
+      isHost: false,
+      area: 0,
+      url: canonUrl,
+      pageUrl,
+      sourceHint: payload.sourceHint || null,
+      videoHint: payload.videoHint || null,
+      initialState: payload.state || null
+    };
+
+    await setSessionState({
+      activeSession,
+      autoplayMuted: false
+    });
+    await updateBadge(activeSession, false);
+    await syncSelfMetaToOffscreen();
+
+    const deliverFeed = async (tId) => {
+      if (payload.sourceHint) {
+        chrome.tabs.sendMessage(
+          tId,
+          { target: 'content', type: 'APPLY_SOURCE_HINT', sourceHint: payload.sourceHint },
+          { frameId: 0 }
+        ).catch(() => {});
+      }
+      chrome.tabs.sendMessage(
+        tId,
+        { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }
+      ).catch(() => {});
+      scheduleScanRetries(tId);
+      const sState = await getSessionState();
+      chrome.tabs.sendMessage(
+        tId,
+        {
+          target: 'content',
+          type: 'APPLY_INITIAL_STATE',
+          state: payload.state,
+          rttMs: message.peerRttMs ?? sState.rttMs ?? 0,
+          clockOffsetMs: message.peerClockOffsetMs ?? null,
+          videoHint: payload.videoHint || null
+        }
+      ).catch(() => {});
+    };
+
+    if (!isNavigating) {
+      await ensureContentScripts(targetTab.id);
+      deliverFeed(targetTab.id);
+    } else {
+      const listener = (uTabId, uInfo) => {
+        if (uTabId === targetTab.id && uInfo.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          deliverFeed(targetTab.id);
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      setTimeout(() => deliverFeed(targetTab.id), 1200);
+    }
+
+    return { ok: true };
+  }
+
+  // Handle live state request from follower (host replies with snapshot)
+  if (payloadType === 'REQUEST_LIVE_STATE') {
+    const session = await getSessionState();
+    if (session.activeSession?.url === payload.canonUrl && session.activeSession.isHost && session.activeSession.tabId) {
+      let snap = null;
+      try {
+        const frameOpts = typeof session.activeSession.frameId === 'number'
+          ? { frameId: session.activeSession.frameId }
+          : undefined;
+        snap = await chrome.tabs.sendMessage(
+          session.activeSession.tabId,
+          { target: 'content', type: 'REQUEST_STATE_SNAPSHOT' },
+          frameOpts
+        );
+      } catch (_) {}
+
+      await sendToOffscreen({
+        type: 'RTC_SEND',
+        payload: {
+          type: 'LIVE_STATE_SNAPSHOT',
+          canonUrl: payload.canonUrl,
+          pageUrl: session.activeSession.pageUrl,
+          videoHint: snap?.videoHint || session.activeSession.videoHint || null,
+          state: snap?.state || null,
+          sentAt: Date.now()
+        }
+      });
+    }
+    return { ok: true };
+  }
+
+  // Handle live state snapshot from host (follower applies state)
+  if (payloadType === 'LIVE_STATE_SNAPSHOT') {
+    const session = await getSessionState();
+    if (!session.activeSession?.isHost && session.activeSession?.url === payload.canonUrl && payload.state && session.activeSession.tabId) {
+      const tabId = session.activeSession.tabId;
+      const frameOpts = typeof session.activeSession.frameId === 'number'
+        ? { frameId: session.activeSession.frameId }
+        : undefined;
+
+      const videoHint = payload.videoHint || session.activeSession.videoHint || null;
+      if (videoHint && !session.activeSession.videoHint) {
+        session.activeSession.videoHint = videoHint;
+        await setSessionState({ activeSession: session.activeSession });
+      }
+
+      chrome.tabs.sendMessage(
+        tabId,
+        {
+          target: 'content',
+          type: 'APPLY_INITIAL_STATE',
+          state: {
+            ...payload.state,
+            sentAt: payload.sentAt
+          },
+          rttMs: message.peerRttMs ?? session.rttMs ?? 0,
+          clockOffsetMs: message.peerClockOffsetMs ?? session.clockOffsetMs ?? null,
+          videoHint
+        },
+        frameOpts
+      ).catch(() => {});
+    }
+    return { ok: true };
+  }
+
+  // Handle INTENT and HEARTBEAT sync messages
+  if (payloadType === 'INTENT' || payloadType === 'HEARTBEAT') {
+    const session = await getSessionState();
+    if (session.activeSession?.tabId) {
+      const tabId = session.activeSession.tabId;
+      if (payload.canonUrl && session.activeSession.url && payload.canonUrl !== session.activeSession.url) {
+        const guard = remoteNavGuard.get(tabId);
+        const isGuarded = Boolean(guard && Date.now() < guard.until);
+        if (payload.pageUrl && isShareableVideoPageUrl(payload.pageUrl) && !isGuarded) {
+          remoteNavGuard.set(tabId, { canonUrl: payload.canonUrl, until: Date.now() + 4500 });
+          session.activeSession.url = payload.canonUrl;
+          session.activeSession.pageUrl = payload.pageUrl;
+          session.activeSession.frameId = null;
+          session.activeSession.initialState = payload;
+          await setSessionState({ activeSession: session.activeSession });
+          await chrome.tabs.update(tabId, { url: payload.pageUrl, active: true }).catch(() => {});
+        }
+        return { ok: true };
+      }
+
+      chrome.tabs.sendMessage(
+        session.activeSession.tabId,
+        {
+          target: 'content',
+          type: 'REMOTE_SYNC',
+          msg: payload,
+          rttMs: message.peerRttMs ?? session.rttMs ?? 0,
+          clockOffsetMs: message.peerClockOffsetMs ?? null
+        },
+        typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
+      ).catch(() => {});
+
+      // If unanchored follower receives active playback, record initial state and nudge video scan/activation
+      if (typeof session.activeSession.frameId !== 'number' && payload?.paused === false) {
+        session.activeSession.initialState = payload;
+        await setSessionState({ activeSession: session.activeSession });
+        const now = Date.now();
+        if (now - lastIntentScanTime >= 1200) {
+          lastIntentScanTime = now;
+          chrome.tabs.sendMessage(session.activeSession.tabId, { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }).catch(() => {});
+        }
+      }
+    }
+    return { ok: true };
+  }
+
+  // Handle bilateral SESSION_END
+  if (payloadType === 'SESSION_END') {
+    const session = await getSessionState();
+    if (session.activeSession?.tabId) {
+      chrome.tabs.sendMessage(
+        session.activeSession.tabId,
+        { target: 'content', type: 'DETACH_SYNC' },
+        typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
+      ).catch(() => {});
+    }
+    await setSessionState({
+      activeSession: null,
+      autoplayMuted: false
+    });
+    await updateBadge(null, false);
+    await syncSelfMetaToOffscreen();
+    if (session.pendingReload) {
+      await setSessionState({ pendingReload: false });
+      chrome.runtime.reload();
+    }
+    return { ok: true };
+  }
+
+  // Handle incoming KICK_PEER
+  if (payloadType === 'KICK_PEER') {
+    const targetPeerId = payload.targetPeerId;
+    const { peerId } = await chrome.storage.local.get(['peerId']);
+    if (targetPeerId && peerId && targetPeerId === peerId) {
       if (armedPickerTabId) {
         await cancelArmedPicker(armedPickerTabId);
       }
-      const canonUrl = canonicalizeVideoUrl(pageUrl);
-      const prevSession = await getSessionState();
-      const tabs = await chrome.tabs.query({});
-      let targetTab = findMatchingTab(tabs, pageUrl);
-      let isNavigating = false;
-
-      if (!targetTab && prevSession.activeSession?.tabId) {
-        const prevTabId = prevSession.activeSession.tabId;
-        const exists = tabs.some((t) => t.id === prevTabId);
-        if (exists) {
-          remoteNavGuard.set(prevTabId, { canonUrl, until: Date.now() + 4500 });
-          targetTab = await chrome.tabs.update(prevTabId, { url: pageUrl, active: true }).catch(() => null);
-          isNavigating = true;
-        }
-      }
-
-      if (targetTab) {
-        if (canonicalizeVideoUrl(targetTab.url) !== canonUrl) {
-          remoteNavGuard.set(targetTab.id, { canonUrl, until: Date.now() + 4500 });
-          await chrome.tabs.update(targetTab.id, { url: pageUrl, active: true }).catch(() => {});
-          isNavigating = true;
-        } else {
-          await chrome.tabs.update(targetTab.id, { active: true }).catch(() => {});
-        }
-        if (targetTab.windowId) {
-          await chrome.windows.update(targetTab.windowId, { focused: true }).catch(() => {});
-        }
-      } else {
-        targetTab = await chrome.tabs.create({ url: pageUrl, active: true });
-        isNavigating = true;
-      }
-
-      const activeSession = {
-        tabId: targetTab.id,
-        frameId: null,
-        isHost: false,
-        area: 0,
-        url: canonUrl,
-        pageUrl,
-        sourceHint: payload.sourceHint || null,
-        initialState: payload.state || null
-      };
-
-      await setSessionState({
-        activeSession,
-        autoplayMuted: false
-      });
-      await updateBadge(activeSession, false);
-      await syncSelfMetaToOffscreen();
-
-      const deliverFeed = async (tId) => {
-        if (payload.sourceHint) {
-          chrome.tabs.sendMessage(
-            tId,
-            { target: 'content', type: 'APPLY_SOURCE_HINT', sourceHint: payload.sourceHint },
-            { frameId: 0 }
-          ).catch(() => {});
-        }
-        chrome.tabs.sendMessage(
-          tId,
-          { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }
-        ).catch(() => {});
-        scheduleScanRetries(tId);
-        const sState = await getSessionState();
-        chrome.tabs.sendMessage(
-          tId,
-          {
-            target: 'content',
-            type: 'APPLY_INITIAL_STATE',
-            state: payload.state,
-            rttMs: message.peerRttMs ?? sState.rttMs ?? 0,
-            clockOffsetMs: message.peerClockOffsetMs ?? null
-          }
-        ).catch(() => {});
-      };
-
-      if (!isNavigating) {
-        await ensureContentScripts(targetTab.id);
-        deliverFeed(targetTab.id);
-      } else {
-        const listener = (uTabId, uInfo) => {
-          if (uTabId === targetTab.id && uInfo.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(listener);
-            deliverFeed(targetTab.id);
-          }
-        };
-        chrome.tabs.onUpdated.addListener(listener);
-        setTimeout(() => deliverFeed(targetTab.id), 1200);
-      }
-
-      sendResponse({ ok: true });
-      return;
-    }
-
-    // Handle INTENT and HEARTBEAT sync messages
-    if (payloadType === 'INTENT' || payloadType === 'HEARTBEAT') {
-      const session = await getSessionState();
-      if (session.activeSession?.tabId) {
-        const tabId = session.activeSession.tabId;
-        if (payload.canonUrl && session.activeSession.url && payload.canonUrl !== session.activeSession.url) {
-          const guard = remoteNavGuard.get(tabId);
-          const isGuarded = Boolean(guard && Date.now() < guard.until);
-          if (payload.pageUrl && isShareableVideoPageUrl(payload.pageUrl) && !isGuarded) {
-            remoteNavGuard.set(tabId, { canonUrl: payload.canonUrl, until: Date.now() + 4500 });
-            session.activeSession.url = payload.canonUrl;
-            session.activeSession.pageUrl = payload.pageUrl;
-            session.activeSession.frameId = null;
-            session.activeSession.initialState = payload;
-            await setSessionState({ activeSession: session.activeSession });
-            await chrome.tabs.update(tabId, { url: payload.pageUrl, active: true }).catch(() => {});
-          }
-          sendResponse({ ok: true });
-          return;
-        }
-
-        chrome.tabs.sendMessage(
-          session.activeSession.tabId,
-          {
-            target: 'content',
-            type: 'REMOTE_SYNC',
-            msg: payload,
-            rttMs: message.peerRttMs ?? session.rttMs ?? 0,
-            clockOffsetMs: message.peerClockOffsetMs ?? null
-          },
-          typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
-        ).catch(() => {});
-
-        // If unanchored follower receives active playback, record initial state and nudge video scan/activation
-        if (typeof session.activeSession.frameId !== 'number' && payload?.paused === false) {
-          session.activeSession.initialState = payload;
-          await setSessionState({ activeSession: session.activeSession });
-          const now = Date.now();
-          if (now - lastIntentScanTime >= 1200) {
-            lastIntentScanTime = now;
-            chrome.tabs.sendMessage(session.activeSession.tabId, { target: 'content', type: 'SCAN_VIDEOS', autoStart: true }).catch(() => {});
-          }
-        }
-      }
-      sendResponse({ ok: true });
-      return;
-    }
-
-    // Handle bilateral SESSION_END
-    if (payloadType === 'SESSION_END') {
       const session = await getSessionState();
       if (session.activeSession?.tabId) {
         chrome.tabs.sendMessage(
@@ -902,65 +1019,30 @@ async function handleOffscreenMessage(message, sendResponse) {
           typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
         ).catch(() => {});
       }
+      await chrome.storage.local.remove(['pairKey', 'isRoomOwner']);
+      await chrome.storage.local.set({ kickedNotice: true });
       await setSessionState({
         activeSession: null,
+        peerOnline: false,
+        rttMs: null,
+        peers: [],
+        peerCount: 0,
         autoplayMuted: false
       });
       await updateBadge(null, false);
-      await syncSelfMetaToOffscreen();
-      sendResponse({ ok: true });
-      if (session.pendingReload) {
-        await setSessionState({ pendingReload: false });
-        chrome.runtime.reload();
-      }
-      return;
+      await sendToOffscreen({ type: 'LEAVE_ROOM' });
+      await chrome.offscreen?.closeDocument?.().catch(() => {});
+    } else if (targetPeerId) {
+      await sendToOffscreen({
+        type: 'KICK_PEER',
+        targetPeerId,
+        broadcast: false
+      });
     }
-
-    // Handle incoming KICK_PEER
-    if (payloadType === 'KICK_PEER') {
-      const targetPeerId = payload.targetPeerId;
-      const { peerId } = await chrome.storage.local.get(['peerId']);
-      if (targetPeerId && peerId && targetPeerId === peerId) {
-        if (armedPickerTabId) {
-          await cancelArmedPicker(armedPickerTabId);
-        }
-        const session = await getSessionState();
-        if (session.activeSession?.tabId) {
-          chrome.tabs.sendMessage(
-            session.activeSession.tabId,
-            { target: 'content', type: 'DETACH_SYNC' },
-            typeof session.activeSession.frameId === 'number' ? { frameId: session.activeSession.frameId } : undefined
-          ).catch(() => {});
-        }
-        await chrome.storage.local.remove(['pairKey', 'isRoomOwner']);
-        await chrome.storage.local.set({ kickedNotice: true });
-        await setSessionState({
-          activeSession: null,
-          peerOnline: false,
-          rttMs: null,
-          peers: [],
-          peerCount: 0,
-          autoplayMuted: false
-        });
-        await updateBadge(null, false);
-        await sendToOffscreen({ type: 'LEAVE_ROOM' });
-        await chrome.offscreen?.closeDocument?.().catch(() => {});
-      } else if (targetPeerId) {
-        await sendToOffscreen({
-          type: 'KICK_PEER',
-          targetPeerId,
-          broadcast: false
-        });
-      }
-      sendResponse({ ok: true });
-      return;
-    }
-
-    sendResponse({ ok: true });
-    return;
+    return { ok: true };
   }
 
-  sendResponse({ ok: false, error: 'Unknown offscreen message' });
+  return { ok: true };
 }
 
 async function handleSwMessage(message, sender, sendResponse) {
@@ -1170,13 +1252,40 @@ async function handleSwMessage(message, sender, sendResponse) {
     await ensureContentScripts(tabId);
     const { peerId } = await chrome.storage.local.get(['peerId']);
     let engageRes = null;
+    let candidateFrameIds = [0];
     try {
-      engageRes = await chrome.tabs.sendMessage(tabId, {
-        target: 'content',
-        type: 'ENGAGE_TAB_SYNC',
-        selfId: peerId
-      });
+      if (chrome.scripting?.executeScript) {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          func: () => ({ count: document.querySelectorAll('video').length })
+        });
+        if (Array.isArray(results) && results.length > 0) {
+          const frame0 = results.find(r => r.frameId === 0);
+          const childFramesWithVideo = results
+            .filter(r => r.frameId !== 0 && r.result?.count > 0)
+            .map(r => r.frameId);
+          if (frame0 && frame0.result?.count > 0) {
+            candidateFrameIds = [0, ...childFramesWithVideo];
+          } else if (childFramesWithVideo.length > 0) {
+            candidateFrameIds = [...childFramesWithVideo, 0];
+          }
+        }
+      }
     } catch (_) {}
+
+    for (const fId of candidateFrameIds) {
+      try {
+        const res = await chrome.tabs.sendMessage(
+          tabId,
+          { target: 'content', type: 'ENGAGE_TAB_SYNC', selfId: peerId },
+          fId === 0 ? undefined : { frameId: fId }
+        );
+        if (res?.ok && res?.found) {
+          engageRes = res;
+          break;
+        }
+      } catch (_) {}
+    }
 
     const inviteUrl = buildInviteUrl({ pairKey, pageUrl: tab.url });
     if (engageRes?.ok && engageRes?.found) {
@@ -1404,6 +1513,7 @@ async function handleSwMessage(message, sender, sendResponse) {
     const frameId = sender?.frameId ?? message.frameId ?? 0;
     const hasVideo = message.hasVideo !== false;
     const area = message.area || 0;
+    const videoHint = message.videoHint || null;
 
     // Send CANCEL_PICKER to tabId
     if (tabId) {
@@ -1415,6 +1525,20 @@ async function handleSwMessage(message, sender, sendResponse) {
 
     let sourceHint = null;
     const { peerId } = await chrome.storage.local.get(['peerId']);
+
+    let pickedState = message.state || null;
+    if (!pickedState && hasVideo && tabId) {
+      try {
+        const snap = await chrome.tabs.sendMessage(
+          tabId,
+          { target: 'content', type: 'REQUEST_STATE_SNAPSHOT' },
+          { frameId }
+        );
+        if (snap?.ok && snap?.state) {
+          pickedState = snap.state;
+        }
+      } catch (_) {}
+    }
 
     if (tabId) {
       try {
@@ -1434,7 +1558,9 @@ async function handleSwMessage(message, sender, sendResponse) {
             type: 'ATTACH_SYNC',
             selfId: peerId,
             isHost: true,
-            initialState: null
+            initialState: pickedState || null,
+            videoHint,
+            url: canonicalizeVideoUrl(pageUrl)
           },
           { frameId }
         ).catch(() => {});
@@ -1455,6 +1581,7 @@ async function handleSwMessage(message, sender, sendResponse) {
       url: canonicalizeVideoUrl(pageUrl),
       pageUrl,
       sourceHint,
+      videoHint,
       duration: message.duration || 0,
       frameOrigin: message.frameOrigin || null,
       initialState: null
@@ -1474,7 +1601,8 @@ async function handleSwMessage(message, sender, sendResponse) {
         type: 'SHARE_FEED',
         pageUrl,
         sourceHint,
-        state: message.state || null
+        videoHint,
+        state: pickedState || null
       }
     });
 
@@ -1498,6 +1626,11 @@ async function handleSwMessage(message, sender, sendResponse) {
     const newArea = message.area || 0;
 
     if (activeSession && tabId && activeSession.tabId === tabId) {
+      if (activeSession.frameId === frameId) {
+        sendResponse({ ok: true, alreadyAttached: true });
+        return;
+      }
+
       if (typeof activeSession.frameId === 'number' && activeSession.frameId !== frameId) {
         let oldValid = false;
         try {
@@ -1544,10 +1677,31 @@ async function handleSwMessage(message, sender, sendResponse) {
           type: 'ATTACH_SYNC',
           selfId: peerId,
           isHost: Boolean(activeSession.isHost),
-          initialState: initState
+          initialState: initState,
+          rttMs: session.rttMs || 0,
+          clockOffsetMs: session.clockOffsetMs || 0,
+          videoHint: activeSession.videoHint || null,
+          url: activeSession.url
         },
         { frameId }
       ).catch(() => {});
+
+      if (!activeSession.isHost) {
+        const reqPayload = {
+          type: 'REQUEST_LIVE_STATE',
+          canonUrl: activeSession.url,
+          pageUrl: activeSession.pageUrl
+        };
+        sendToOffscreen({ type: 'RTC_SEND', payload: reqPayload }).catch(() => {});
+        setTimeout(async () => {
+          try {
+            const cur = await getSessionState();
+            if (cur.activeSession && !cur.activeSession.isHost && cur.activeSession.tabId === tabId && cur.activeSession.url === activeSession.url) {
+              sendToOffscreen({ type: 'RTC_SEND', payload: reqPayload }).catch(() => {});
+            }
+          } catch (_) {}
+        }, 900);
+      }
     }
 
     sendResponse({ ok: true });
@@ -1555,9 +1709,22 @@ async function handleSwMessage(message, sender, sendResponse) {
   }
 
   if (type === 'LOCAL_SYNC_MSG') {
+    const session = await getSessionState();
+    if (!session.activeSession || !session.activeSession.tabId) {
+      sendResponse({ ok: false, ignored: true });
+      return;
+    }
+    if (sender?.tab?.id !== session.activeSession.tabId) {
+      sendResponse({ ok: false, ignored: true });
+      return;
+    }
+    if (typeof session.activeSession.frameId === 'number' && typeof sender?.frameId === 'number' && sender.frameId !== session.activeSession.frameId) {
+      sendResponse({ ok: false, ignored: true });
+      return;
+    }
+
     const payload = message.payload || message.msg || message.data;
     if (payload) {
-      const session = await getSessionState();
       payload.canonUrl = session.activeSession?.url || null;
       payload.pageUrl = session.activeSession?.pageUrl || null;
       await sendToOffscreen({
@@ -1580,3 +1747,12 @@ async function handleSwMessage(message, sender, sendResponse) {
 
   sendResponse({ ok: false, error: 'Unknown SW action' });
 }
+
+export {
+  handleSwMessage,
+  handleOffscreenMessage,
+  handlePeerPayload,
+  getSessionState,
+  setSessionState,
+  remoteNavGuard
+};

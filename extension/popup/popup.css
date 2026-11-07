@@ -709,6 +709,13 @@ html, body {
   gap: 6px;
 }
 
+.action-split-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
 .btn {
   height: 32px;
   border-radius: var(--radius-sm);
@@ -868,6 +875,47 @@ html, body {
   background-color: rgba(239, 68, 68, 0.22);
   border-color: var(--danger);
   color: #EF4444;
+}
+
+.btn-ghost {
+  background-color: transparent;
+  color: var(--on-surface-variant);
+  border: 1px solid transparent;
+  font-family: var(--font-label);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--duration-standard) var(--ease-standard),
+              opacity var(--duration-standard) var(--ease-standard),
+              background-color var(--duration-standard) var(--ease-standard),
+              border-color var(--duration-standard) var(--ease-standard),
+              color var(--duration-standard) var(--ease-standard);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background-color: var(--surface-container);
+  color: var(--on-surface);
+  border-color: var(--outline);
+}
+
+.btn-ghost:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-xs {
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 12px;
 }
 
 /* --------------------------------------------------------------------------

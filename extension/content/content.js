@@ -14,6 +14,13 @@
   let heartbeatInterval = null;
   let isApplyingRemote = false;
   let remoteGuardUntil = 0;
+  let guardPlayUntil = 0;
+  let guardPauseUntil = 0;
+  let guardSeekUntil = 0;
+  let guardRateUntil = 0;
+  let remotePauseTimer = null;
+  let remotePauseVideo = null;
+  let remotePauseSeekedFn = null;
   let followerBootLock = false;
   let followerBootTimer = null;
   let isBuffering = false;
@@ -32,12 +39,42 @@
   let videoObserver = null;
   const reportedVideos = new WeakSet();
   let lastPickedVideo = null;
+  let explicitPickedVideo = null;
+  let explicitPickedUrl = '';
+  let attachedSyncUrl = '';
+  let attachedPageUrl = '';
   let isPaired = false;
   let userReleasedHold = false;
   let holdCount = 0;
   let holdPageUrl = (typeof window !== 'undefined' && window.location?.href) ? window.location.href : '';
   let loadTime = Date.now();
   let onScrollRebind = null;
+
+  function getCurrentPageUrl() {
+    return (typeof window !== 'undefined' && (window.location?.href || window.location?.origin)) || '';
+  }
+
+  function isSameSyncUrl(explicitUrl) {
+    if (explicitUrl && attachedSyncUrl) return explicitUrl === attachedSyncUrl;
+    const cur = getCurrentPageUrl();
+    return Boolean(cur && attachedPageUrl && cur === attachedPageUrl);
+  }
+
+  function clearFollowerBootLock() {
+    followerBootLock = false;
+    if (followerBootTimer) {
+      clearTimeout(followerBootTimer);
+      followerBootTimer = null;
+    }
+  }
+
+  function armFollowerBootUnlock(ms = 1200) {
+    if (followerBootTimer) clearTimeout(followerBootTimer);
+    followerBootTimer = setTimeout(() => {
+      followerBootLock = false;
+      followerBootTimer = null;
+    }, ms);
+  }
 
   function releaseAutoplayHold() {
     userReleasedHold = true;
@@ -70,7 +107,7 @@
   }
 
   function onDocumentPlayCapture(e) {
-    if (userReleasedHold || currentSyncVideo || !isPaired) return;
+    if (userReleasedHold || currentSyncVideo || !isPaired || isApplyingRemote || Date.now() < remoteGuardUntil || Date.now() < guardPlayUntil) return;
     const path = (typeof window !== 'undefined' && window.location?.pathname) ? window.location.pathname : '';
     const search = (typeof window !== 'undefined' && window.location?.search) ? window.location.search : '';
     if (path === '/' && !search) return;
@@ -240,8 +277,12 @@
                 if (!pt) continue;
                 const a = (pt.tagName === 'A')
                   ? pt
-                  : (typeof pt.closest === 'function' ? pt.closest('a') : (typeof pt.querySelector === 'function' ? pt.querySelector('a') : null));
+                  : (typeof pt.closest === 'function' ? pt.closest('a') : null);
                 if (a && (a.getAttribute?.('href') || a.href)) {
+                  const aWidth = (typeof a.getBoundingClientRect === 'function') ? (a.getBoundingClientRect()?.width || 0) : 0;
+                  if (typeof window !== 'undefined' && window.innerWidth > 0 && aWidth >= window.innerWidth * 0.6) {
+                    continue;
+                  }
                   const rawHref = a.getAttribute?.('href') || a.href;
                   const linkUrl = new URL(rawHref, curHref);
                   const linkKey = linkUrl.origin + linkUrl.pathname + linkUrl.search;
@@ -335,6 +376,62 @@
       return rawB - rawA;
     });
     return valid[0];
+  }
+
+  function getVideoSrcPath(v) {
+    if (!v) return '';
+    const raw = v.currentSrc || v.src || '';
+    if (!raw || raw.startsWith('blob:') || raw.startsWith('data:')) return '';
+    try {
+      return new URL(raw, getCurrentPageUrl() || 'https://localhost').pathname || '';
+    } catch {
+      return String(raw).split('#')[0].split('?')[0];
+    }
+  }
+
+  function computeVideoHint(v) {
+    if (!v) return null;
+    const all = collectVideos();
+    const valid = all.filter(isValidVideo);
+    return {
+      validIndex: valid.indexOf(v),
+      domIndex: all.indexOf(v),
+      id: v.id || '',
+      srcPath: getVideoSrcPath(v)
+    };
+  }
+
+  function resolveTargetVideo(videoHint) {
+    if (explicitPickedVideo && explicitPickedVideo.isConnected !== false && getCurrentPageUrl() === explicitPickedUrl) {
+      return explicitPickedVideo;
+    }
+    if (videoHint && typeof videoHint === 'object') {
+      const all = collectVideos();
+      const valid = all.filter(isValidVideo);
+      if (videoHint.id) {
+        const byId = valid.find((v) => v.id === videoHint.id) || all.find((v) => v.id === videoHint.id);
+        if (byId) return byId;
+      }
+      if (videoHint.srcPath) {
+        const bySrc = valid.filter((v) => getVideoSrcPath(v) === videoHint.srcPath);
+        if (bySrc.length === 1) return bySrc[0];
+        if (bySrc.length > 1) {
+          if (typeof videoHint.validIndex === 'number' && videoHint.validIndex >= 0 && valid[videoHint.validIndex] && getVideoSrcPath(valid[videoHint.validIndex]) === videoHint.srcPath) {
+            return valid[videoHint.validIndex];
+          }
+          return bySrc[0];
+        }
+        const byAllSrc = all.find((v) => getVideoSrcPath(v) === videoHint.srcPath);
+        if (byAllSrc) return byAllSrc;
+      }
+      if (typeof videoHint.validIndex === 'number' && videoHint.validIndex >= 0 && videoHint.validIndex < valid.length) {
+        return valid[videoHint.validIndex];
+      }
+      if (typeof videoHint.domIndex === 'number' && videoHint.domIndex >= 0 && videoHint.domIndex < all.length) {
+        return all[videoHint.domIndex];
+      }
+    }
+    return getBestVideo();
   }
 
   /**
@@ -852,15 +949,20 @@
     if (!video) {
       video = getBestVideo();
     }
+    if (video) {
+      explicitPickedVideo = video;
+      explicitPickedUrl = getCurrentPageUrl();
+    }
     lastPickedVideo = video;
 
-    let state = { paused: true, time: 0, rate: 1 };
+    let state = { paused: true, time: 0, rate: 1, seq: syncEngine?.getSeq?.() || 1 };
     let duration = 0;
     let area = 0;
     let frameOrigin = window.location.origin;
+    const videoHint = video ? computeVideoHint(video) : null;
 
     if (video) {
-      state = getVideoState(video);
+      state = { ...getVideoState(video), seq: syncEngine?.getSeq?.() || 1 };
       duration = Number(video.duration) || 0;
       const rect = video.getBoundingClientRect();
       area = (rect.width || video.videoWidth || 0) * (rect.height || video.videoHeight || 0);
@@ -880,6 +982,7 @@
         state,
         duration,
         area,
+        videoHint,
         hasVideo: Boolean(video),
         pageUrl: (typeof window !== 'undefined' && window === window.top && window.location?.href) ? window.location.href : ''
       });
@@ -892,6 +995,7 @@
         }
       }
     } catch {}
+    return { state, videoHint };
   }
 
   /**
@@ -1321,10 +1425,58 @@
     return autoActivateStream(video);
   }
 
+  function cancelRemotePauseEnforcement() {
+    if (remotePauseTimer) {
+      clearTimeout(remotePauseTimer);
+      remotePauseTimer = null;
+    }
+    if (remotePauseVideo && remotePauseSeekedFn) {
+      try {
+        remotePauseVideo.removeEventListener('seeked', remotePauseSeekedFn);
+      } catch {}
+    }
+    remotePauseVideo = null;
+    remotePauseSeekedFn = null;
+  }
+
+  function scheduleRemotePauseEnforcement(video) {
+    cancelRemotePauseEnforcement();
+    if (!video) return;
+    remotePauseVideo = video;
+    const enforce = () => {
+      if (!remotePauseVideo || (currentSyncVideo && remotePauseVideo !== currentSyncVideo)) return;
+      if (!remotePauseVideo.paused) {
+        guardPauseUntil = Date.now() + 300;
+        guardPlayUntil = Math.max(guardPlayUntil, Date.now() + 650);
+        try {
+          remotePauseVideo.pause();
+        } catch {}
+        sendMainCommand('pause');
+      }
+    };
+    remotePauseSeekedFn = () => {
+      if (remotePauseVideo && !remotePauseVideo.paused) {
+        enforce();
+      }
+    };
+    try {
+      video.addEventListener('seeked', remotePauseSeekedFn);
+    } catch {}
+    remotePauseTimer = setTimeout(() => {
+      enforce();
+      cancelRemotePauseEnforcement();
+    }, 140);
+  }
+
   function onTrustedUserInteraction(e) {
     if (e && e.isTrusted === false) return;
+    guardPlayUntil = 0;
+    guardPauseUntil = 0;
+    guardSeekUntil = 0;
+    guardRateUntil = 0;
     remoteGuardUntil = 0;
     isApplyingRemote = false;
+    cancelRemotePauseEnforcement();
     if (followerBootLock) {
       followerBootLock = false;
       if (followerBootTimer) {
@@ -1347,7 +1499,7 @@
         burstInterval = null;
         return;
       }
-      if (!isBuffering && !followerBootLock && Date.now() >= remoteGuardUntil) {
+      if (!isBuffering && !followerBootLock) {
         const msg = engine.localHeartbeat(getVideoState(), Date.now());
         sendLocalSyncMsg(msg);
       }
@@ -1367,12 +1519,10 @@
 
   async function applyInitialState(video, initState, rttMs = 0, clockOffsetMs = null) {
     if (!video || !initState || typeof initState !== 'object') return;
+    releaseAutoplayHold();
     const t0 = Date.now();
 
     const doApply = async (useElapsed = false) => {
-      remoteGuardUntil = Date.now() + 380;
-      isApplyingRemote = true;
-
       let transitSec;
       if (typeof clockOffsetMs === 'number' && Number.isFinite(clockOffsetMs) && initState.timestamp > 0) {
         transitSec = Math.max(0, Math.min(2.0, ((Date.now() + clockOffsetMs) - Number(initState.timestamp)) / 1000));
@@ -1385,44 +1535,45 @@
 
       try {
         baseRate = rate;
-        video.playbackRate = rate;
-        video.currentTime = targetTime;
-        sendMainCommand('seek', { time: targetTime });
+        if (video.playbackRate !== rate) {
+          guardRateUntil = Date.now() + 450;
+          video.playbackRate = rate;
+        }
+        const shouldSeek = initState.paused !== true || Math.abs((Number(video.currentTime) || 0) - targetTime) > 0.08;
+        if (shouldSeek) {
+          guardSeekUntil = Date.now() + 450;
+          video.currentTime = targetTime;
+          sendMainCommand('seek', { time: targetTime });
+        }
 
         if (initState.paused === false) {
+          cancelRemotePauseEnforcement();
+          guardPlayUntil = Date.now() + 450;
           if (isVideoUnstarted(video)) {
             autoActivateStream(video);
           }
           await safePlay(video);
           sendMainCommand('play');
         } else if (initState.paused === true) {
+          guardPlayUntil = Date.now() + 650;
+          guardPauseUntil = Date.now() + 450;
           video.pause();
           sendMainCommand('pause');
+          scheduleRemotePauseEnforcement(video);
         }
       } catch {}
 
-      remoteGuardUntil = Date.now() + 380;
-      setTimeout(() => {
-        isApplyingRemote = false;
-      }, 50);
-
-      if (followerBootTimer) {
-        clearTimeout(followerBootTimer);
-      }
-      followerBootTimer = setTimeout(() => {
-        followerBootLock = false;
-        followerBootTimer = null;
-      }, 450);
+      clearFollowerBootLock();
     };
 
     if (typeof video.readyState === 'number' && video.readyState < 1) {
+      armFollowerBootUnlock(1200);
       video.addEventListener('loadedmetadata', () => {
         doApply(true);
       }, { once: true });
 
       if (video.readyState === 0) {
-        remoteGuardUntil = Date.now() + 800;
-        isApplyingRemote = true;
+        guardPlayUntil = Date.now() + 800;
         autoActivateStream(video);
         if (initState.paused === false) {
           await safePlay(video);
@@ -1434,26 +1585,61 @@
   }
 
   async function attachSync(selfId, initialState = null, options = {}) {
-    detachSync();
+    releaseAutoplayHold();
+    const sameUrl = isSameSyncUrl(options.url);
+    const targetVid = resolveTargetVideo(options.videoHint);
+    const isHost = options.isHost !== undefined ? Boolean(options.isHost) : !initialState;
 
-    currentSyncVideo = getBestVideo();
+    if (
+      sameUrl &&
+      targetVid &&
+      currentSyncVideo === targetVid &&
+      (!selfId || currentEngineSelfId === selfId) &&
+      !initialState &&
+      syncEngine
+    ) {
+      if (isHost) {
+        clearFollowerBootLock();
+        syncEngine.seed?.(Math.max(syncEngine.getSeq?.() || 0, 1), currentEngineSelfId || selfId || '');
+      } else if (followerBootLock) {
+        armFollowerBootUnlock(1200);
+      }
+      return { ok: true, alreadyAttached: true, state: getVideoState(), duration: currentSyncVideo.duration || 0 };
+    }
+
+    const prevSeq = sameUrl ? (syncEngine?.getSeq?.() || 0) : 0;
+    const prevSeqOwner = sameUrl ? (syncEngine?.getSeqOwner?.() || currentEngineSelfId || '') : '';
+    const keepExplicit = (sameUrl || !attachedSyncUrl) && Boolean(explicitPickedVideo) && getCurrentPageUrl() === explicitPickedUrl;
+
+    detachSync({ preserveExplicit: keepExplicit, preserveUrl: sameUrl });
+
+    currentSyncVideo = targetVid || resolveTargetVideo(options.videoHint);
     if (!currentSyncVideo) {
       return { ok: false, error: 'no_video' };
     }
+    if (options.url) {
+      attachedSyncUrl = options.url;
+    }
+    attachedPageUrl = getCurrentPageUrl();
 
     const engine = await getSyncEngine(selfId);
-
-    const isHost = options.isHost !== undefined ? Boolean(options.isHost) : !initialState;
+    const effectiveSelfId = selfId || currentEngineSelfId || '';
+    if (prevSeq > 0) {
+      engine?.seed?.(prevSeq, prevSeqOwner || effectiveSelfId);
+    }
 
     if (isHost) {
-      engine?.seed?.(Math.max(engine?.getSeq?.() || 0, 1), selfId);
-      followerBootLock = false;
+      engine?.seed?.(Math.max(engine?.getSeq?.() || 0, 1), effectiveSelfId);
+      clearFollowerBootLock();
       triggerFacadePlayIfUnstarted(currentSyncVideo);
     } else {
       if (initialState?.seq) {
         engine?.seed?.(initialState.seq, initialState.seqOwner || '');
+      } else if (prevSeq === 0) {
+        engine?.seed?.(Math.max(engine?.getSeq?.() || 0, 1), effectiveSelfId);
       }
       followerBootLock = true;
+      armFollowerBootUnlock(1200);
       if (initialState && typeof initialState === 'object') {
         await applyInitialState(currentSyncVideo, initialState, options.rttMs, options.clockOffsetMs);
       }
@@ -1461,7 +1647,18 @@
 
     const onPlay = () => {
       isBuffering = false;
-      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
+      if (Date.now() < guardPlayUntil || followerBootLock) {
+        // Re-pause immediately if MSE/player auto-resumed while enforcing a remote PAUSE
+        if (remotePauseVideo === currentSyncVideo && currentSyncVideo && !currentSyncVideo.paused) {
+          guardPauseUntil = Date.now() + 300;
+          try {
+            currentSyncVideo.pause();
+          } catch {}
+          sendMainCommand('pause');
+        }
+        return;
+      }
+      cancelRemotePauseEnforcement();
       const msg = engine?.localIntent('PLAY', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
       triggerFastBurst(engine);
@@ -1469,24 +1666,26 @@
 
     const onPause = () => {
       isBuffering = false;
-      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
+      if (Date.now() < guardPauseUntil || followerBootLock) return;
+      cancelRemotePauseEnforcement();
       const msg = engine?.localIntent('PAUSE', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
+      triggerFastBurst(engine);
     };
 
     const onSeeking = () => {
-      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
+      if (Date.now() < guardSeekUntil || followerBootLock) return;
       const msg = engine?.localIntent('SEEK', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
     };
 
     const onSeeked = () => {
-      if (Date.now() < remoteGuardUntil || isApplyingRemote || followerBootLock) return;
+      if (Date.now() < guardSeekUntil || followerBootLock) return;
       triggerFastBurst(engine);
     };
 
     const onRateChange = () => {
-      if (Date.now() < remoteGuardUntil || isApplyingRemote || isNudging || followerBootLock) return;
+      if (Date.now() < guardRateUntil || isNudging || followerBootLock) return;
       baseRate = Number(currentSyncVideo.playbackRate) || 1;
       const msg = engine?.localIntent('RATE', getVideoState(), Date.now());
       sendLocalSyncMsg(msg);
@@ -1509,6 +1708,8 @@
     currentSyncVideo.addEventListener('playing', onPlaying);
 
     window.addEventListener('pointerdown', onTrustedUserInteraction, true);
+    window.addEventListener('pointerup', onTrustedUserInteraction, true);
+    window.addEventListener('click', onTrustedUserInteraction, true);
     window.addEventListener('keydown', onTrustedUserInteraction, true);
 
     videoListeners = {
@@ -1544,8 +1745,44 @@
     return { ok: true, state: getVideoState(), duration: currentSyncVideo.duration || 0 };
   }
 
+  function rebindVideoListeners(nextV) {
+    if (!nextV || nextV === currentSyncVideo) return;
+    if (videoListeners && videoListeners.video) {
+      const v = videoListeners.video;
+      try {
+        v.removeEventListener('play', videoListeners.onPlay);
+        v.removeEventListener('pause', videoListeners.onPause);
+        v.removeEventListener('seeking', videoListeners.onSeeking);
+        v.removeEventListener('seeked', videoListeners.onSeeked);
+        v.removeEventListener('ratechange', videoListeners.onRateChange);
+        v.removeEventListener('waiting', videoListeners.onWaiting);
+        v.removeEventListener('playing', videoListeners.onPlaying);
+      } catch {}
+    }
+    currentSyncVideo = nextV;
+    lastPickedVideo = nextV;
+    if (videoListeners) {
+      videoListeners.video = nextV;
+      nextV.addEventListener('play', videoListeners.onPlay);
+      nextV.addEventListener('pause', videoListeners.onPause);
+      nextV.addEventListener('seeking', videoListeners.onSeeking);
+      nextV.addEventListener('seeked', videoListeners.onSeeked);
+      nextV.addEventListener('ratechange', videoListeners.onRateChange);
+      nextV.addEventListener('waiting', videoListeners.onWaiting);
+      nextV.addEventListener('playing', videoListeners.onPlaying);
+    }
+  }
+
   function checkAndRebindSyncVideo() {
     if (!currentSyncVideo) return;
+    if (
+      explicitPickedVideo &&
+      currentSyncVideo === explicitPickedVideo &&
+      explicitPickedVideo.isConnected !== false &&
+      getCurrentPageUrl() === explicitPickedUrl
+    ) {
+      return;
+    }
     const isDisconnectedOrHidden = (currentSyncVideo.isConnected === false) ||
       (typeof window !== 'undefined' && window.innerWidth > 0 && getViewportVisibleArea(currentSyncVideo) === 0);
     if (!isDisconnectedOrHidden) return;
@@ -1553,36 +1790,13 @@
     const nextV = getBestVideo();
     const isNextVisible = (typeof window !== 'undefined' && window.innerWidth > 0) ? getViewportVisibleArea(nextV) > 0 : true;
     if (nextV && nextV !== currentSyncVideo && isNextVisible) {
-      if (videoListeners && videoListeners.video) {
-        const v = videoListeners.video;
-        try {
-          v.removeEventListener('play', videoListeners.onPlay);
-          v.removeEventListener('pause', videoListeners.onPause);
-          v.removeEventListener('seeking', videoListeners.onSeeking);
-          v.removeEventListener('seeked', videoListeners.onSeeked);
-          v.removeEventListener('ratechange', videoListeners.onRateChange);
-          v.removeEventListener('waiting', videoListeners.onWaiting);
-          v.removeEventListener('playing', videoListeners.onPlaying);
-        } catch {}
-      }
-      currentSyncVideo = nextV;
-      lastPickedVideo = nextV;
-      if (videoListeners) {
-        videoListeners.video = nextV;
-        nextV.addEventListener('play', videoListeners.onPlay);
-        nextV.addEventListener('pause', videoListeners.onPause);
-        nextV.addEventListener('seeking', videoListeners.onSeeking);
-        nextV.addEventListener('seeked', videoListeners.onSeeked);
-        nextV.addEventListener('ratechange', videoListeners.onRateChange);
-        nextV.addEventListener('waiting', videoListeners.onWaiting);
-        nextV.addEventListener('playing', videoListeners.onPlaying);
-      }
+      rebindVideoListeners(nextV);
     }
   }
 
   let pendingMetadataSnap = null;
 
-  function detachSync() {
+  function detachSync({ preserveExplicit = false, preserveUrl = false } = {}) {
     if (onScrollRebind && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
       try {
         window.removeEventListener('scroll', onScrollRebind, { passive: true });
@@ -1622,6 +1836,8 @@
 
     try {
       window.removeEventListener('pointerdown', onTrustedUserInteraction, true);
+      window.removeEventListener('pointerup', onTrustedUserInteraction, true);
+      window.removeEventListener('click', onTrustedUserInteraction, true);
       window.removeEventListener('keydown', onTrustedUserInteraction, true);
     } catch {}
 
@@ -1630,9 +1846,23 @@
     }
 
     currentSyncVideo = null;
+    if (!preserveExplicit) {
+      explicitPickedVideo = null;
+      explicitPickedUrl = '';
+      lastPickedVideo = null;
+    }
+    if (!preserveUrl) {
+      attachedSyncUrl = '';
+      attachedPageUrl = '';
+    }
     isApplyingRemote = false;
     remoteGuardUntil = 0;
-    followerBootLock = false;
+    guardPlayUntil = 0;
+    guardPauseUntil = 0;
+    guardSeekUntil = 0;
+    guardRateUntil = 0;
+    cancelRemotePauseEnforcement();
+    clearFollowerBootLock();
     isBuffering = false;
     baseRate = 1;
     isNudging = false;
@@ -1640,13 +1870,14 @@
   }
 
   async function handleRemoteSync(message) {
+    releaseAutoplayHold();
     const rawMsg = message.msg || message.payload || message;
     if (!currentSyncVideo) {
-      currentSyncVideo = getBestVideo();
+      currentSyncVideo = resolveTargetVideo(message.videoHint);
     }
     if (!currentSyncVideo && rawMsg?.paused === false) {
       autoActivateStream(null);
-      currentSyncVideo = getBestVideo();
+      currentSyncVideo = resolveTargetVideo(message.videoHint);
     }
     if (!currentSyncVideo) {
       return { ok: false, error: 'no_video' };
@@ -1669,34 +1900,62 @@
       baseRate = rawMsg.rate;
     }
 
-    isApplyingRemote = true;
-    remoteGuardUntil = Date.now() + 380;
+    const targetPaused = resolution.pausedChanged ? resolution.targetPaused : Boolean(rawMsg.paused);
+
     try {
+      if (resolution.action === 'SNAP') {
+        if (typeof resolution.targetTime === 'number') {
+          const shouldSeek = !targetPaused || Math.abs((Number(currentSyncVideo.currentTime) || 0) - resolution.targetTime) > 0.08;
+          if (shouldSeek) {
+            guardSeekUntil = Date.now() + 450;
+            currentSyncVideo.currentTime = resolution.targetTime;
+            sendMainCommand('seek', { time: resolution.targetTime });
+          }
+        }
+        isNudging = false;
+        const nextRate = typeof resolution.targetRate === 'number' ? resolution.targetRate : baseRate;
+        if (currentSyncVideo.playbackRate !== nextRate) {
+          guardRateUntil = Date.now() + 450;
+          currentSyncVideo.playbackRate = nextRate;
+        }
+      } else if (resolution.action === 'NUDGE') {
+        isNudging = true;
+        if (typeof resolution.targetRate === 'number' && currentSyncVideo.playbackRate !== resolution.targetRate) {
+          guardRateUntil = Date.now() + 450;
+          currentSyncVideo.playbackRate = resolution.targetRate;
+        }
+      } else if (resolution.action === 'NOOP') {
+        if (currentSyncVideo.playbackRate !== baseRate) {
+          guardRateUntil = Date.now() + 450;
+          currentSyncVideo.playbackRate = baseRate;
+        }
+        isNudging = false;
+      }
+
       if (resolution.pausedChanged) {
         if (resolution.targetPaused) {
+          guardPlayUntil = Date.now() + 650;
+          guardPauseUntil = Date.now() + 450;
           currentSyncVideo.pause();
+          sendMainCommand('pause');
+          scheduleRemotePauseEnforcement(currentSyncVideo);
         } else {
+          cancelRemotePauseEnforcement();
+          guardPlayUntil = Date.now() + 450;
           if (currentSyncVideo.paused && isVideoUnstarted(currentSyncVideo)) {
             autoActivateStream(currentSyncVideo);
           }
           await safePlay(currentSyncVideo);
+          sendMainCommand('play');
         }
-      }
-
-      if (resolution.action === 'SNAP') {
-        if (typeof resolution.targetTime === 'number') {
-          currentSyncVideo.currentTime = resolution.targetTime;
-        }
-        isNudging = false;
-        currentSyncVideo.playbackRate = typeof resolution.targetRate === 'number' ? resolution.targetRate : baseRate;
-      } else if (resolution.action === 'NUDGE') {
-        isNudging = true;
-        if (typeof resolution.targetRate === 'number') {
-          currentSyncVideo.playbackRate = resolution.targetRate;
-        }
-      } else if (resolution.action === 'NOOP') {
-        currentSyncVideo.playbackRate = baseRate;
-        isNudging = false;
+      } else if (targetPaused === false) {
+        cancelRemotePauseEnforcement();
+      } else if (targetPaused === true && !currentSyncVideo.paused) {
+        guardPlayUntil = Date.now() + 650;
+        guardPauseUntil = Date.now() + 450;
+        currentSyncVideo.pause();
+        sendMainCommand('pause');
+        scheduleRemotePauseEnforcement(currentSyncVideo);
       }
 
       if (typeof currentSyncVideo.readyState === 'number' && currentSyncVideo.readyState < 1 && typeof resolution.targetTime === 'number') {
@@ -1705,6 +1964,7 @@
           pendingMetadataSnap = () => {
             try {
               if (currentSyncVideo) {
+                guardSeekUntil = Date.now() + 450;
                 currentSyncVideo.currentTime = snapTime;
                 sendMainCommand('seek', { time: snapTime });
               }
@@ -1714,18 +1974,8 @@
           currentSyncVideo.addEventListener('loadedmetadata', pendingMetadataSnap, { once: true });
         }
       }
-
-      if (resolution.action === 'SNAP' && typeof resolution.targetTime === 'number') {
-        sendMainCommand('seek', { time: resolution.targetTime });
-      }
-      if (resolution.pausedChanged) {
-        sendMainCommand(resolution.targetPaused ? 'pause' : 'play');
-      }
     } finally {
-      remoteGuardUntil = Date.now() + 380;
-      setTimeout(() => {
-        isApplyingRemote = false;
-      }, 50);
+      clearFollowerBootLock();
     }
 
     return { ok: true, resolution };
@@ -1772,7 +2022,9 @@
       attachSync(message.selfId || message.peerId, message.initialState, {
         isHost: message.isHost,
         rttMs: message.rttMs,
-        clockOffsetMs: message.clockOffsetMs
+        clockOffsetMs: message.clockOffsetMs,
+        videoHint: message.videoHint,
+        url: message.url
       }).then(sendResponse);
       return true; // async
     }
@@ -1780,7 +2032,14 @@
     if (type === 'APPLY_INITIAL_STATE') {
       releaseAutoplayHold();
       (async () => {
-        let video = currentSyncVideo || getBestVideo();
+        let video = message.videoHint
+          ? resolveTargetVideo(message.videoHint)
+          : (currentSyncVideo || resolveTargetVideo(null));
+        if (video && currentSyncVideo && video !== currentSyncVideo) {
+          rebindVideoListeners(video);
+        } else if (video && !currentSyncVideo) {
+          currentSyncVideo = video;
+        }
         const engine = await getSyncEngine();
         const initState = message.state || message.initialState;
         if (initState && engine) {
@@ -1790,17 +2049,13 @@
         }
         if (!video && initState) {
           autoActivateStream(null);
-          video = currentSyncVideo || getBestVideo();
+          video = currentSyncVideo || resolveTargetVideo(message.videoHint);
         }
         if (video && initState) {
           await applyInitialState(video, initState, message.rttMs, message.clockOffsetMs);
-          if (followerBootTimer) clearTimeout(followerBootTimer);
-          followerBootTimer = setTimeout(() => {
-            followerBootLock = false;
-            followerBootTimer = null;
-          }, 450);
         } else {
           followerBootLock = true;
+          armFollowerBootUnlock(1200);
         }
         sendResponse({ ok: true, hasVideo: Boolean(video) });
       })();
@@ -1809,38 +2064,72 @@
 
     if (type === 'ENGAGE_TAB_SYNC') {
       releaseAutoplayHold();
-      const video = getBestVideo();
+      const video = resolveTargetVideo(message.videoHint);
       if (!video) {
         sendResponse({ ok: false, found: false });
         return false;
       }
       lastPickedVideo = video;
       (async () => {
+        let picked = null;
         try {
-          await pickTarget(video);
+          picked = await pickTarget(video);
         } catch {}
-        sendResponse({ ok: true, found: true });
+        sendResponse({
+          ok: true,
+          found: true,
+          state: picked?.state || { ...getVideoState(video), seq: syncEngine?.getSeq?.() || 1 },
+          videoHint: picked?.videoHint || computeVideoHint(video)
+        });
       })();
       return true; // async
     }
 
     if (type === 'REBIND_TAB_VIDEO') {
       releaseAutoplayHold();
-      lastPickedVideo = null;
+      const sameUrl = isSameSyncUrl(message.url);
+      if (!sameUrl) {
+        lastPickedVideo = null;
+        explicitPickedVideo = null;
+        explicitPickedUrl = '';
+      }
+      if (
+        sameUrl &&
+        currentSyncVideo &&
+        currentSyncVideo.isConnected !== false &&
+        isValidVideo(currentSyncVideo) &&
+        (!message.selfId || currentEngineSelfId === message.selfId) &&
+        (!message.videoHint || resolveTargetVideo(message.videoHint) === currentSyncVideo)
+      ) {
+        if (message.isHost) {
+          clearFollowerBootLock();
+        }
+        sendResponse({
+          ok: true,
+          alreadyBound: true,
+          state: getVideoState(currentSyncVideo),
+          videoHint: computeVideoHint(currentSyncVideo)
+        });
+        return false;
+      }
       (async () => {
-        let v = getBestVideo();
+        let v = resolveTargetVideo(message.videoHint);
         if (!v) {
           await new Promise(r => setTimeout(r, 250));
-          v = getBestVideo();
+          v = resolveTargetVideo(message.videoHint);
         }
         if (!v) {
           await new Promise(r => setTimeout(r, 500));
-          v = getBestVideo();
+          v = resolveTargetVideo(message.videoHint);
         }
         if (v) {
           reportVideoReady(v);
         }
-        await attachSync(message.selfId, null, { isHost: Boolean(message.isHost) });
+        await attachSync(message.selfId, null, {
+          isHost: Boolean(message.isHost),
+          videoHint: message.videoHint,
+          url: message.url
+        });
         sendResponse({ ok: true });
       })();
       return true; // async
@@ -1864,7 +2153,10 @@
         ok: true,
         hasVideo: Boolean(video),
         state: getVideoState(video),
-        duration: video?.duration || 0
+        duration: video?.duration || 0,
+        seq: syncEngine?.getSeq?.() || 1,
+        seqOwner: syncEngine?.getSeqOwner?.() || currentEngineSelfId || '',
+        videoHint: computeVideoHint(video)
       });
       return false;
     }

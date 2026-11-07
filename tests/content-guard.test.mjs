@@ -2079,4 +2079,376 @@ describe('content.js - Site-Agnostic Preview Guard, Locked-Tab Engage & Autoplay
 
     assert.equal(video.paused, false, 'Trusted user gesture must release autoplay hold');
   });
+
+  test('<45%-width video is selectable when document.body contains <a href="/other"> or wide layout anchor', async () => {
+    setupTestEnv();
+    const video = createMockVideo({
+      videoWidth: 320,
+      videoHeight: 180,
+      duration: 180,
+      src: 'https://cdn.example.com/small-embed.mp4',
+      getBoundingClientRect: () => ({ left: 100, top: 100, right: 420, bottom: 280, width: 320, height: 180 })
+    });
+    const navAnchor = {
+      tagName: 'A',
+      href: 'https://example.com/other',
+      getAttribute: () => '/other',
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 120, bottom: 40, width: 120, height: 40 })
+    };
+    const wideAnchor = {
+      tagName: 'A',
+      href: 'https://example.com/other',
+      getAttribute: () => '/other',
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 })
+    };
+    const docBody = {
+      tagName: 'BODY',
+      closest: () => null,
+      querySelector: (sel) => (sel === 'a' ? navAnchor : null)
+    };
+    mockDoc.querySelectorAll = () => [video];
+    mockDoc.elementsFromPoint = () => [video, wideAnchor, docBody];
+
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    let res = await new Promise(resolve => {
+      onMessage({ type: 'SCAN_VIDEOS' }, {}, resolve);
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.found, true);
+
+    // Compact preview card anchor (< 60% viewport width) must still be rejected
+    const cardAnchor = {
+      tagName: 'A',
+      href: 'https://example.com/other',
+      getAttribute: () => '/other',
+      getBoundingClientRect: () => ({ left: 100, top: 100, right: 420, bottom: 280, width: 320, height: 180 })
+    };
+    mockDoc.elementsFromPoint = () => [cardAnchor];
+    res = await new Promise(resolve => {
+      onMessage({ type: 'SCAN_VIDEOS' }, {}, resolve);
+    });
+    assert.equal(res.found, false);
+  });
+
+  test('picking Video #2 produces videoHint, resolves Video #2 on partner ATTACH_SYNC, and is not hijacked on scroll', async () => {
+    setupTestEnv();
+    let v2Top = 400;
+    const v1 = createMockVideo({
+      id: 'vid-1',
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 240,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 640, bottom: 360, width: 640, height: 360 })
+    });
+    v1.currentSrc = 'https://cdn.example.com/first.mp4';
+    const v2 = createMockVideo({
+      id: 'vid-2',
+      videoWidth: 640,
+      videoHeight: 360,
+      duration: 180,
+      getBoundingClientRect: () => ({ left: 0, top: v2Top, right: 640, bottom: v2Top + 360, width: 640, height: 360 })
+    });
+    v2.currentSrc = 'https://cdn.example.com/second.mp4';
+
+    const makeMockNode = (tag) => {
+      const node = {
+        tagName: String(tag || 'DIV').toUpperCase(),
+        style: {},
+        children: [],
+        appendChild(c) { this.children.push(c); return c; },
+        remove() {
+          const idx = mockDoc._nodes.indexOf(this);
+          if (idx >= 0) mockDoc._nodes.splice(idx, 1);
+        },
+        attachShadow() {
+          this._shadowRoot = makeMockNode('SHADOW');
+          return this._shadowRoot;
+        },
+        setAttribute(k, v) { this[k] = v; },
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 })
+      };
+      mockDoc._nodes.push(node);
+      return node;
+    };
+    mockDoc._nodes = [];
+    mockDoc.documentElement = makeMockNode('HTML');
+    mockDoc.body = makeMockNode('BODY');
+    mockDoc.createElement = (tag) => makeMockNode(tag);
+    mockDoc.createElementNS = (_ns, tag) => makeMockNode(tag);
+    mockDoc.getElementById = (id) => mockDoc._nodes.find(n => n.id === id) || null;
+    mockDoc.querySelectorAll = () => [v1, v2];
+    mockDoc.elementsFromPoint = (_x, y) => (y >= 400 ? [v2] : [v1]);
+
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+    onMessage({ type: 'START_PICKER' }, {}, () => {});
+
+    const clickHandler = windowListeners['click']?.[windowListeners['click'].length - 1]?.fn;
+    assert.ok(typeof clickHandler === 'function', 'Picker click handler must be registered');
+    await clickHandler({
+      clientX: 100,
+      clientY: 450,
+      preventDefault: () => {},
+      stopImmediatePropagation: () => {}
+    });
+
+    const pickedMsg = sentMessages.find(m => m.type === 'VIDEO_PICKED');
+    assert.ok(pickedMsg, 'VIDEO_PICKED must be dispatched');
+    assert.deepEqual({ ...pickedMsg.videoHint }, {
+      validIndex: 1,
+      domIndex: 1,
+      id: 'vid-2',
+      srcPath: '/second.mp4'
+    });
+    assert.equal(pickedMsg.state.seq, 1);
+
+    // Attach host on picker tab, then scroll Video #2 out of view
+    await new Promise(resolve => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'picker-host',
+        isHost: true,
+        videoHint: pickedMsg.videoHint,
+        url: 'https://example.com/watch?v=12345'
+      }, {}, resolve);
+    });
+
+    v2Top = -500;
+    for (const h of [...(windowListeners['scroll'] || [])]) h.fn();
+
+    let snapRes;
+    onMessage({ type: 'REQUEST_STATE_SNAPSHOT' }, {}, (r) => { snapRes = r; });
+    assert.equal(snapRes.videoHint?.id, 'vid-2', 'Scroll must not hijack explicitPickedVideo away from Video #2');
+
+    // REBIND_TAB_VIDEO on same URL must be a no-op keeping Video #2
+    let rebindRes;
+    onMessage({
+      type: 'REBIND_TAB_VIDEO',
+      selfId: 'picker-host',
+      isHost: true,
+      url: 'https://example.com/watch?v=12345'
+    }, {}, (r) => { rebindRes = r; });
+    assert.equal(rebindRes.ok, true);
+    assert.equal(rebindRes.alreadyBound, true);
+    assert.equal(rebindRes.videoHint?.id, 'vid-2');
+
+    // Clean up picker VM timers before spinning up partner tab VM
+    onMessage({ type: 'DETACH_SYNC' }, {}, () => {});
+    mockWindow.__lockstepTeardown?.();
+
+    // Partner tab receives ATTACH_SYNC with videoHint and binds to its Video #2 (even without matching id)
+    setupTestEnv();
+    const p1 = createMockVideo({
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 240,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 640, bottom: 360, width: 640, height: 360 })
+    });
+    p1.currentSrc = 'https://cdn.example.com/first.mp4';
+    const p2 = createMockVideo({
+      videoWidth: 640,
+      videoHeight: 360,
+      duration: 180,
+      getBoundingClientRect: () => ({ left: 0, top: 400, right: 640, bottom: 760, width: 640, height: 360 })
+    });
+    p2.currentSrc = 'https://cdn.example.com/second.mp4';
+    mockDoc.querySelectorAll = () => [p1, p2];
+
+    const partnerOnMsg = mockChrome.runtime.onMessage._listeners[0];
+    await new Promise(resolve => {
+      partnerOnMsg({
+        type: 'ATTACH_SYNC',
+        selfId: 'partner-follower',
+        isHost: false,
+        initialState: { time: 15, paused: true, rate: 1, seq: 2, seqOwner: 'picker-host' },
+        videoHint: pickedMsg.videoHint,
+        url: 'https://example.com/watch?v=12345'
+      }, {}, resolve);
+    });
+
+    let partnerSnap;
+    partnerOnMsg({ type: 'REQUEST_STATE_SNAPSHOT' }, {}, (r) => { partnerSnap = r; });
+    assert.equal(partnerSnap.videoHint?.srcPath, '/second.mp4');
+    assert.equal(partnerSnap.seq, 2);
+  });
+
+  test('duplicate ATTACH_SYNC without initialState preserves seq and never leaves followerBootLock stuck', async () => {
+    setupTestEnv();
+    const video = createMockVideo({
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 300,
+      currentTime: 10,
+      paused: true
+    });
+    mockDoc.querySelectorAll = () => [video];
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    // 1. Follower attaches without initialState (starts boot lock with fallback timer)
+    await new Promise(resolve => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'follower-a',
+        isHost: false,
+        initialState: null,
+        url: 'https://example.com/watch?v=12345'
+      }, {}, resolve);
+    });
+
+    // 2. REMOTE_SYNC applies state -> advances seq to 4 and clears followerBootLock immediately
+    await new Promise(resolve => {
+      onMessage({
+        type: 'REMOTE_SYNC',
+        msg: { type: 'SEEK', paused: true, time: 25, rate: 1, seq: 4, sender: 'host-a', timestamp: Date.now() },
+        rttMs: 0
+      }, {}, resolve);
+    });
+
+    // Wait past 380ms remote guard
+    await new Promise(resolve => setTimeout(resolve, 410));
+
+    // 3. Duplicate ATTACH_SYNC without initialState on same URL -> must preserve seq=4 and NOT re-lock
+    const dupRes = await new Promise(resolve => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'follower-a',
+        isHost: false,
+        initialState: null,
+        url: 'https://example.com/watch?v=12345'
+      }, {}, resolve);
+    });
+    assert.equal(dupRes.ok, true);
+    assert.equal(dupRes.alreadyAttached, true);
+
+    let snap;
+    onMessage({ type: 'REQUEST_STATE_SNAPSHOT' }, {}, (r) => { snap = r; });
+    assert.equal(snap.seq, 4, 'Duplicate ATTACH_SYNC must not reset syncEngine seq');
+
+    sentMessages = [];
+    await video.play();
+    assert.ok(
+      sentMessages.some(m => m.type === 'LOCAL_SYNC_MSG'),
+      'Duplicate ATTACH_SYNC must not leave followerBootLock stuck'
+    );
+
+    // 4. Follower attach without initialState or REMOTE_SYNC still unlocks via 1200ms fallback timer
+    await new Promise(resolve => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'follower-b',
+        isHost: false,
+        initialState: null,
+        url: 'https://example.com/watch?v=99999'
+      }, {}, resolve);
+    });
+    onMessage({ type: 'REQUEST_STATE_SNAPSHOT' }, {}, (r) => { snap = r; });
+    assert.equal(snap.seq, 1, 'URL change must reset seq to 1');
+
+    await new Promise(resolve => setTimeout(resolve, 1260));
+    sentMessages = [];
+    video.paused = false;
+    for (const f of (video._listeners['play'] || [])) f();
+    assert.ok(
+      sentMessages.some(m => m.type === 'LOCAL_SYNC_MSG'),
+      '1200ms fallback timer must release followerBootLock'
+    );
+  });
+
+  test('incoming playing HEARTBEAT 50ms before local video.pause() still emits PAUSE', async () => {
+    setupTestEnv();
+    const video = createMockVideo({
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 300,
+      currentTime: 30,
+      paused: false
+    });
+    mockDoc.querySelectorAll = () => [video];
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    await new Promise(resolve => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'host-pause',
+        isHost: true,
+        initialState: null,
+        url: 'https://example.com/watch?v=hb-pause'
+      }, {}, resolve);
+    });
+
+    // Simulate incoming playing HEARTBEAT (triggers NOOP/NUDGE rate path)
+    await new Promise(resolve => {
+      onMessage({
+        type: 'REMOTE_SYNC',
+        msg: { type: 'HEARTBEAT', action: 'HEARTBEAT', paused: false, time: 30.1, rate: 1, seq: 2, peerId: 'partner', timestamp: Date.now() },
+        rttMs: 0
+      }, {}, resolve);
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+    sentMessages = [];
+    video.pause();
+
+    assert.ok(
+      sentMessages.some(m => m.type === 'LOCAL_SYNC_MSG' && m.msg?.action === 'PAUSE'),
+      'Local pause 50ms after playing HEARTBEAT must emit PAUSE immediately'
+    );
+  });
+
+  test('remote PAUSE skips <80ms micro-seek and re-pauses rogue play 100ms later without bouncing PLAY', async () => {
+    setupTestEnv();
+    const video = createMockVideo({
+      videoWidth: 1280,
+      videoHeight: 720,
+      duration: 300,
+      currentTime: 50.02,
+      paused: false
+    });
+    let _ct = 50.02;
+    let timeWrites = [];
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => _ct,
+      set: (v) => {
+        timeWrites.push(v);
+        _ct = v;
+      }
+    });
+    mockDoc.querySelectorAll = () => [video];
+    const onMessage = mockChrome.runtime.onMessage._listeners[0];
+
+    await new Promise(resolve => {
+      onMessage({
+        type: 'ATTACH_SYNC',
+        selfId: 'follower-pause',
+        isHost: false,
+        initialState: { time: 50.02, paused: false, rate: 1, seq: 1, seqOwner: 'host' },
+        url: 'https://example.com/watch?v=micro-seek'
+      }, {}, resolve);
+    });
+
+    timeWrites = [];
+    await new Promise(resolve => {
+      onMessage({
+        type: 'REMOTE_SYNC',
+        msg: { type: 'INTENT', action: 'PAUSE', paused: true, time: 50.05, rate: 1, seq: 2, peerId: 'host', timestamp: Date.now() },
+        rttMs: 0
+      }, {}, resolve);
+    });
+
+    assert.equal(timeWrites.length, 0, 'Remote PAUSE must skip <80ms micro-seek');
+    assert.equal(video.paused, true, 'Video must be paused after remote PAUSE');
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    sentMessages = [];
+    video.paused = false;
+    for (const f of (video._listeners['play'] || [])) f();
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    assert.equal(video.paused, true, 'Rogue play 100ms after remote PAUSE must be re-paused');
+    assert.equal(
+      sentMessages.some(m => m.type === 'LOCAL_SYNC_MSG' && (m.msg?.action === 'PLAY' || m.msg?.type === 'PLAY')),
+      false,
+      'Rogue play after remote PAUSE must not bounce PLAY intent'
+    );
+  });
 });

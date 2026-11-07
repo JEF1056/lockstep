@@ -50,14 +50,26 @@
 
           <p id="tab-gate-hint" class="tab-gate-hint hidden">Open a specific video or reel first</p>
 
-          <button id="btn-unpaired-pick" class="btn btn-primary btn-pill" type="button">
-            <span>Sync This Tab</span>
-            <span class="btn-trailing-icon" aria-hidden="true">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="9 18 15 12 9 6"></polyline>
+          <div class="action-split-row button-row">
+            <button id="btn-unpaired-pick" class="btn btn-primary btn-pill flex-1" type="button">
+              <span>Sync This Tab</span>
+              <span class="btn-trailing-icon" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+              </span>
+            </button>
+
+            <button id="btn-unpaired-pick-specific" class="btn-icon-round" type="button" title="Pick specific video on page" aria-label="Pick specific video on page">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"/>
+                <line x1="12" y1="3" x2="12" y2="7"/>
+                <line x1="12" y1="17" x2="12" y2="21"/>
+                <line x1="3" y1="12" x2="7" y2="12"/>
+                <line x1="17" y1="12" x2="21" y2="12"/>
               </svg>
-            </span>
-          </button>
+            </button>
+          </div>
 
           <details id="details-pair-key" class="pair-details">
             <summary class="details-summary">
@@ -109,7 +121,7 @@
           <div id="roster-idle" class="session-roster hidden"></div>
 
           <!-- Action Button Group -->
-          <div class="button-row">
+          <div class="action-split-row button-row">
             <button id="btn-paired-pick" class="btn btn-primary btn-pill flex-1" type="button">
               <span>Sync This Tab</span>
               <span class="btn-trailing-icon" aria-hidden="true">
@@ -164,6 +176,7 @@
             <button id="btn-focus-tab" class="btn btn-secondary btn-compact flex-1" type="button">Jump to Synced Tab</button>
             <button id="btn-switch-tab" class="btn btn-secondary btn-compact hidden" type="button">Sync This Tab</button>
             <button id="btn-focus-video" class="btn-quiet-link hidden" type="button">Focus Video</button>
+            <button id="btn-pick-specific-sync" class="btn-ghost btn-xs hidden" type="button">Pick Video</button>
           </div>
 
           <!-- Muted Warning -->
